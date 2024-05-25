@@ -21,6 +21,7 @@
 #include <raft/core/handle.hpp>
 #include <raft/distance/distance_types.hpp>
 #include <raft/linalg/map.cuh>
+#include <raft/linalg/transpose.cuh>
 #include <raft/util/cudart_utils.hpp>
 
 #include <thrust/reduce.h>
@@ -133,6 +134,27 @@ class TSNETest : public ::testing::TestWithParam<TSNEInput> {
     rmm::device_uvector<float> input_dists(0, stream);
     rmm::device_uvector<float> pw_emb_dists(n * n, stream);
 
+    std::vector<float> hostX(n * p);
+    raft::update_host(hostX.data(), X_d.data(), n * p, stream);
+    handle.sync_stream(stream);
+    std::cout << "Dataset X" << std::endl;
+    std::cout << hostX[0] << " and " << hostX[1] << " and " << hostX[n * p - 2] << " and "
+              << hostX[n * p - 1] << std::endl;
+    std::cout << hostX[((n - 1) * p) - 1] << std::endl;
+
+    rmm::device_uvector<float> Xtranspose(n * p, stream);
+
+    raft::update_device(Xtranspose.data(), X_d.data(), n * p, stream);
+    raft::linalg::transpose(handle, Xtranspose.data(), X_d.data(), n, p, stream);
+    handle.sync_stream(stream);
+
+    std::vector<float> hX(n * p);
+    raft::update_host(hX.data(), X_d.data(), n * p, stream);
+    handle.sync_stream(stream);
+    std::cout << "Dataset X_transpose" << std::endl;
+    std::cout << hX[0] << " and " << hX[1] << " and " << hX[n * p - 2] << " and " << hX[n * p - 1]
+              << std::endl;
+
     // Run TSNE
     manifold_dense_inputs_t<float> input(X_d.data(), Y_d.data(), n, p);
     knn_graph<int64_t, float> k_graph(n, model_params.n_neighbors, nullptr, nullptr);
@@ -182,6 +204,10 @@ class TSNETest : public ::testing::TestWithParam<TSNEInput> {
     raft::update_device(Y_d.data(), C_contiguous_embedding, n * model_params.dim, stream);
     handle.sync_stream(stream);
     free(embeddings_h);
+
+    raft::update_device(Xtranspose.data(), X_d.data(), n * p, stream);
+    raft::linalg::transpose(handle, Xtranspose.data(), X_d.data(), n, p, stream);
+    handle.sync_stream(stream);
 
     // Produce trustworthiness score
     results.trustworthiness =
