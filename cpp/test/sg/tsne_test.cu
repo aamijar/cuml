@@ -140,12 +140,12 @@ class TSNETest : public ::testing::TestWithParam<TSNEInput> {
     std::cout << "Dataset X" << std::endl;
     std::cout << hostX[0] << " and " << hostX[1] << " and " << hostX[n * p - 2] << " and "
               << hostX[n * p - 1] << std::endl;
-    std::cout << hostX[((n - 1) * p) - 1] << std::endl;
+    std::cout << hostX[p] << " and " << hostX[((n - 1) * p) - 1] << std::endl;
 
     rmm::device_uvector<float> Xtranspose(n * p, stream);
 
     raft::update_device(Xtranspose.data(), X_d.data(), n * p, stream);
-    raft::linalg::transpose(handle, Xtranspose.data(), X_d.data(), n, p, stream);
+    raft::linalg::transpose(handle, Xtranspose.data(), X_d.data(), p, n, stream);
     handle.sync_stream(stream);
 
     std::vector<float> hX(n * p);
