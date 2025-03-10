@@ -100,6 +100,7 @@ IF GPUBUILD == 1:
         COV_EIG_JACOBI = <underlying_type_t_solver> solver.COV_EIG_JACOBI
 
 
+
 class TruncatedSVD(UniversalBase,
                    FMajorInputTagMixin):
     """
