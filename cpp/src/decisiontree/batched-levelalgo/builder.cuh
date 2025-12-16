@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -478,17 +467,17 @@ struct Builder {
     }
 
     // create child nodes (or make the current ones leaf)
-    auto smem_size = 2 * sizeof(IdxT) * TPB_DEFAULT;
     raft::common::nvtx::push_range("nodeSplitKernel @builder.cuh [batched-levelalgo]");
-    nodeSplitKernel<DataT, LabelT, IdxT, TPB_DEFAULT>
-      <<<work_items.size(), TPB_DEFAULT, smem_size, builder_stream>>>(params.max_depth,
-                                                                      params.min_samples_leaf,
-                                                                      params.min_samples_split,
-                                                                      params.max_leaves,
-                                                                      params.min_impurity_decrease,
-                                                                      dataset,
-                                                                      d_work_items,
-                                                                      splits);
+    launchNodeSplitKernel<DataT, LabelT, IdxT, TPB_DEFAULT>(params.max_depth,
+                                                            params.min_samples_leaf,
+                                                            params.min_samples_split,
+                                                            params.max_leaves,
+                                                            params.min_impurity_decrease,
+                                                            dataset,
+                                                            d_work_items,
+                                                            work_items.size(),
+                                                            splits,
+                                                            builder_stream);
     RAFT_CUDA_TRY(cudaPeekAtLastError());
     raft::common::nvtx::pop_range();
     raft::update_host(h_splits, splits, work_items.size(), builder_stream);
@@ -534,24 +523,26 @@ struct Builder {
     ObjectiveT objective(dataset.num_outputs, params.min_samples_leaf);
     // call the computeSplitKernel
     raft::common::nvtx::range kernel_scope("computeSplitKernel @builder.cuh [batched-levelalgo]");
-    computeSplitKernel<DataT, LabelT, IdxT, TPB_DEFAULT>
-      <<<grid, TPB_DEFAULT, smem_size, builder_stream>>>(histograms,
-                                                         params.max_n_bins,
-                                                         params.max_depth,
-                                                         params.min_samples_split,
-                                                         params.max_leaves,
-                                                         dataset,
-                                                         quantiles,
-                                                         d_work_items,
-                                                         col,
-                                                         colids,
-                                                         done_count,
-                                                         mutex,
-                                                         splits,
-                                                         objective,
-                                                         treeid,
-                                                         workload_info,
-                                                         seed);
+    launchComputeSplitKernel<DataT, LabelT, IdxT, TPB_DEFAULT>(histograms,
+                                                               params.max_n_bins,
+                                                               params.max_depth,
+                                                               params.min_samples_split,
+                                                               params.max_leaves,
+                                                               dataset,
+                                                               quantiles,
+                                                               d_work_items,
+                                                               col,
+                                                               colids,
+                                                               done_count,
+                                                               mutex,
+                                                               splits,
+                                                               objective,
+                                                               treeid,
+                                                               workload_info,
+                                                               seed,
+                                                               grid,
+                                                               smem_size,
+                                                               builder_stream);
   }
 
   // Set the leaf value predictions in batch
@@ -580,9 +571,14 @@ struct Builder {
       RAFT_CUDA_TRY(
         cudaMemsetAsync(d_leaves.data(), 0, sizeof(DataT) * d_leaves.size(), builder_stream));
       size_t smem_size = sizeof(BinT) * dataset.num_outputs;
-      int num_blocks   = batch_size;
-      leafKernel<<<num_blocks, TPB_DEFAULT, smem_size, builder_stream>>>(
-        objective, dataset, d_tree.data(), d_instance_ranges.data(), d_leaves.data());
+      launchLeafKernel(objective,
+                       dataset,
+                       d_tree.data(),
+                       d_instance_ranges.data(),
+                       d_leaves.data(),
+                       batch_size,
+                       smem_size,
+                       builder_stream);
       raft::update_host(tree->vector_leaf.data() + batch_begin * dataset.num_outputs,
                         d_leaves.data(),
                         batch_size * dataset.num_outputs,

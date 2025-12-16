@@ -1,23 +1,14 @@
 #
-# Copyright (c) 2019-2023, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
+
+import numpy as np
+import pytest
+import scipy
+from packaging.version import Version
 
 from cuml.tsa.batched_lbfgs import batched_fmin_lbfgs_b
-from cuml.internals.safe_imports import cpu_only_import
-
-np = cpu_only_import("numpy")
 
 
 def rosenbrock(x, a=1, b=100):
@@ -31,7 +22,7 @@ def g_rosenbrock(x, a=1, b=100):
 
     g = np.array(
         [
-            -2 * a - 4 * b * x[0] * (-x[0] ** 2 + x[1]) + 2 * x[0],
+            -2 * a - 4 * b * x[0] * (-(x[0] ** 2) + x[1]) + 2 * x[0],
             b * (-2 * x[0] ** 2 + 2 * x[1]),
         ]
     )
@@ -64,6 +55,10 @@ def g_batched_rosenbrock(
     return gall
 
 
+@pytest.mark.xfail(
+    condition=Version(scipy.__version__) >= Version("1.15"),
+    reason="https://github.com/rapidsai/cuml/issues/6210",
+)
 def test_batched_lbfgs_rosenbrock():
     """Test batched rosenbrock using batched lbfgs implemtnation"""
 
@@ -107,7 +102,6 @@ def test_batched_lbfgs_rosenbrock():
     res_xk, _, _ = batched_fmin_lbfgs_b(
         f, x0, num_batches, gf, iprint=-1, factr=100
     )
-
     np.testing.assert_allclose(res_xk, res_true, rtol=1e-5)
 
 

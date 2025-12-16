@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 # Reports relevant environment information useful for diagnosing and
 # debugging cuML issues.
-# Usage: 
+# Usage:
 # "./print_env.sh" - prints to stdout
 # "./print_env.sh > env.txt" - prints to file "env.txt"
 
@@ -14,16 +16,16 @@ git submodule status --recursive
 else
 echo "Not inside a git repository"
 fi
-echo 
+echo
 
 echo "***OS Information***"
 cat /etc/*-release
 uname -a
-echo 
+echo
 
 echo "***GPU Information***"
 nvidia-smi
-echo 
+echo
 
 echo "***CPU***"
 lscpu
@@ -31,15 +33,15 @@ echo
 
 echo "***CMake***"
 which cmake && cmake --version
-echo 
+echo
 
 echo "***g++***"
 which g++ && g++ --version
-echo 
+echo
 
 echo "***nvcc***"
 which nvcc && nvcc --version
-echo 
+echo
 
 echo "***Python***"
 which python && python -c "import sys; print('Python {0}.{1}.{2}'.format(sys.version_info[0], sys.version_info[1], sys.version_info[2]))"

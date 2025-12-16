@@ -1,40 +1,27 @@
 #
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
+import cupy as cp
+import numpy as np
+import pytest
 from pylibraft.common.handle import Handle
 from sklearn.linear_model import LinearRegression as skreg
-from cuml.datasets import make_regression
-from cuml.testing.utils import ClassEnumerator
-from cuml.explainer.common import model_func_call
-from cuml.explainer.common import link_dict
-from cuml.explainer.common import get_tag_from_model_func
-from cuml.explainer.common import get_link_fn_from_str_or_fn
-from cuml.explainer.common import get_handle_from_cuml_model_func
-from cuml.explainer.common import get_dtype_from_model_func
-from cuml.explainer.common import get_cai_ptr
+
+import cuml
 from cuml import PCA
 from cuml import LinearRegression as reg
-import pytest
-from cuml.internals.safe_imports import cpu_only_import
-import cuml
-from cuml.internals.safe_imports import gpu_only_import
-
-cp = gpu_only_import("cupy")
-np = cpu_only_import("numpy")
-
+from cuml.datasets import make_regression
+from cuml.explainer.common import (
+    get_cai_ptr,
+    get_handle_from_cuml_model_func,
+    get_link_fn_from_str_or_fn,
+    get_tag_from_model_func,
+    link_dict,
+    model_func_call,
+)
+from cuml.testing.utils import ClassEnumerator
 
 models_config = ClassEnumerator(module=cuml)
 models = models_config.get_models()
@@ -60,40 +47,6 @@ _default_tags = [
     "requires_y",
     "pairwise",
 ]
-
-
-def test_get_dtype_from_model_func():
-    X, y = make_regression(
-        n_samples=81,
-        n_features=10,
-        noise=0.1,
-        random_state=42,
-        dtype=np.float32,
-    )
-
-    # checking model with float32 dtype
-    model_f32 = reg().fit(X, y)
-
-    assert get_dtype_from_model_func(model_f32.predict) == np.float32
-
-    # checking model with float64 dtype
-    X = X.astype(np.float64)
-    y = y.astype(np.float64)
-
-    model_f64 = reg().fit(X, y)
-
-    assert get_dtype_from_model_func(model_f64.predict) == np.float64
-
-    # checking model that has not been fitted yet
-    model_not_fit = reg()
-
-    assert get_dtype_from_model_func(model_not_fit.predict) is None
-
-    # checking arbitrary function
-    def dummy_func(x):
-        return x + x
-
-    assert get_dtype_from_model_func(dummy_func) is None
 
 
 def test_get_gpu_tag_from_model_func():
@@ -141,7 +94,7 @@ def test_get_tag_from_model_func(model):
 
     for tag in _default_tags:
         res = get_tag_from_model_func(
-            func=mod.get_param_names, tag=tag, default="FFF"
+            func=mod._get_param_names, tag=tag, default="FFF"
         )
 
         if tag != "preferred_input_order":
@@ -153,7 +106,7 @@ def test_get_handle_from_cuml_model_func(model):
     mod = create_dummy_model(model)
 
     handle = get_handle_from_cuml_model_func(
-        mod.get_param_names, create_new=True
+        mod._get_param_names, create_new=True
     )
 
     assert isinstance(handle, Handle)

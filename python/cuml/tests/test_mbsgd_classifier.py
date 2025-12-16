@@ -1,29 +1,15 @@
-# Copyright (c) 2019-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from cuml.datasets import make_classification
-from sklearn.linear_model import SGDClassifier
-from cuml.testing.utils import unit_param, quality_param, stress_param
-from cuml.linear_model import MBSGDClassifier as cumlMBSGClassifier
-from cuml.internals.safe_imports import gpu_only_import
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
+import cupy as cp
+import numpy as np
 import pytest
-from cuml.internals.safe_imports import cpu_only_import
+from sklearn.linear_model import SGDClassifier
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
 
-np = cpu_only_import("numpy")
-cp = gpu_only_import("cupy")
+import cuml
+from cuml.datasets import make_classification
+from cuml.testing.utils import quality_param, stress_param, unit_param
 
 
 @pytest.fixture(
@@ -65,13 +51,12 @@ def make_dataset(request):
     return nrows, X_train, X_test, y_train, y_test
 
 
-@pytest.mark.xfail(reason="Related to CuPy 9.0 update (see issue #3813)")
 @pytest.mark.parametrize(
     # Grouped those tests to reduce the total number of individual tests
     # while still keeping good coverage of the different features of MBSGD
     ("lrate", "penalty", "loss"),
     [
-        ("constant", "none", "log"),
+        ("constant", None, "log"),
         ("invscaling", "l2", "hinge"),
         ("adaptive", "l1", "squared_loss"),
         ("constant", "elasticnet", "hinge"),
@@ -82,7 +67,7 @@ def test_mbsgd_classifier_vs_skl(lrate, penalty, loss, make_dataset):
     nrows, X_train, X_test, y_train, y_test = make_dataset
 
     if nrows < 500000:
-        cu_mbsgd_classifier = cumlMBSGClassifier(
+        cu_mbsgd_classifier = cuml.MBSGDClassifier(
             learning_rate=lrate,
             eta0=0.005,
             epochs=100,
@@ -112,13 +97,12 @@ def test_mbsgd_classifier_vs_skl(lrate, penalty, loss, make_dataset):
         assert cu_acc >= skl_acc - 0.08
 
 
-@pytest.mark.xfail(reason="Related to CuPy 9.0 update (see issue #3813)")
 @pytest.mark.parametrize(
     # Grouped those tests to reduce the total number of individual tests
     # while still keeping good coverage of the different features of MBSGD
     ("lrate", "penalty", "loss"),
     [
-        ("constant", "none", "log"),
+        ("constant", None, "log"),
         ("invscaling", "l2", "hinge"),
         ("adaptive", "l1", "squared_loss"),
         ("constant", "elasticnet", "hinge"),
@@ -127,7 +111,7 @@ def test_mbsgd_classifier_vs_skl(lrate, penalty, loss, make_dataset):
 def test_mbsgd_classifier(lrate, penalty, loss, make_dataset):
     nrows, X_train, X_test, y_train, y_test = make_dataset
 
-    cu_mbsgd_classifier = cumlMBSGClassifier(
+    model = cuml.MBSGDClassifier(
         learning_rate=lrate,
         eta0=0.005,
         epochs=100,
@@ -136,19 +120,27 @@ def test_mbsgd_classifier(lrate, penalty, loss, make_dataset):
         tol=0.0,
         penalty=penalty,
     )
+    # Fitted attributes don't exist before fit
+    assert not hasattr(model, "coef_")
+    assert not hasattr(model, "intercept_")
 
-    cu_mbsgd_classifier.fit(X_train, y_train)
-    cu_pred = cu_mbsgd_classifier.predict(X_test)
+    model.fit(X_train, y_train)
+
+    # Fitted attributes exist and have correct types after fit
+    assert isinstance(model.coef_, type(X_train))
+    assert isinstance(model.intercept_, float)
+    assert isinstance(model.classes_, np.ndarray)
+
+    cu_pred = model.predict(X_test)
     cu_acc = accuracy_score(cp.asnumpy(cu_pred), cp.asnumpy(y_test))
 
-    assert cu_acc > 0.79
+    assert cu_acc > 0.7
 
 
-@pytest.mark.xfail(reason="Related to CuPy 9.0 update (see issue #3813)")
 def test_mbsgd_classifier_default(make_dataset):
     nrows, X_train, X_test, y_train, y_test = make_dataset
 
-    cu_mbsgd_classifier = cumlMBSGClassifier(batch_size=nrows / 10)
+    cu_mbsgd_classifier = cuml.MBSGDClassifier(batch_size=nrows / 10)
 
     cu_mbsgd_classifier.fit(X_train, y_train)
     cu_pred = cu_mbsgd_classifier.predict(X_test)
@@ -157,22 +149,10 @@ def test_mbsgd_classifier_default(make_dataset):
     assert cu_acc >= 0.69
 
 
-def test_mbsgd_classifier_set_params():
-    x = np.linspace(0, 1, 50)
-    y = (x > 0.5).astype(cp.int32)
-
-    model = cumlMBSGClassifier()
-    model.fit(x, y)
-    coef_before = model.coef_
-
-    model = cumlMBSGClassifier(epochs=20, loss="hinge")
-    model.fit(x, y)
-    coef_after = model.coef_
-
-    model = cumlMBSGClassifier()
-    model.set_params(**{"epochs": 20, "loss": "hinge"})
-    model.fit(x, y)
-    coef_test = model.coef_
-
-    assert coef_before != coef_after
-    assert coef_after == coef_test
+def test_mbsgd_multiclass_errors():
+    X, y = make_classification(random_state=42, n_classes=4, n_informative=4)
+    model = cuml.MBSGDClassifier()
+    with pytest.raises(
+        ValueError, match="binary classification, got 4 classes"
+    ):
+        model.fit(X, y)

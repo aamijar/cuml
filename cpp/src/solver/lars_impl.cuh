@@ -1,22 +1,12 @@
 /*
- * Copyright (c) 2020-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
 
 #include <cuml/common/logger.hpp>
+#include <cuml/common/utils.hpp>
 
 #include <raft/core/handle.hpp>
 #include <raft/linalg/add.cuh>
@@ -26,6 +16,7 @@
 #include <raft/util/cudart_utils.hpp>
 
 #include <cub/cub.cuh>
+#include <cuda/functional>
 
 #include <iostream>
 #include <limits>
@@ -414,8 +405,7 @@ void calcA(const raft::handle_t& handle,
   auto multiply = [] __device__(math_t w, math_t s) { return w * s; };
   raft::linalg::mapThenSumReduce(A, n_active, multiply, stream, ws, sign);
   // Calc Aa = 1 / sqrt(sum(w))
-  raft::linalg::unaryOp(
-    A, A, 1, [] __device__(math_t a) { return 1 / sqrt(a); }, stream);
+  raft::linalg::unaryOp(A, A, 1, [] __device__(math_t a) { return 1 / sqrt(a); }, stream);
 }
 
 /**
@@ -505,8 +495,7 @@ LarsFitStatus calcEquiangularVec(const raft::handle_t& handle,
   calcA(handle, A, n_active, sign, ws, stream);
 
   // ws *= Aa
-  raft::linalg::unaryOp(
-    ws, ws, n_active, [A] __device__(math_t w) { return (*A) * w; }, stream);
+  raft::linalg::unaryOp(ws, ws, n_active, [A] __device__(math_t w) { return (*A) * w; }, stream);
 
   // Check for numeric error
   math_t ws_host;
@@ -611,8 +600,7 @@ void calcMaxStep(const raft::handle_t& handle,
   math_t Cmax = std::abs(cj);
   if (n_active == n_cols) {
     // Last iteration, the inactive set is empty we use equation (2.21)
-    raft::linalg::unaryOp(
-      gamma, A, 1, [Cmax] __device__(math_t A) { return Cmax / A; }, stream);
+    raft::linalg::unaryOp(gamma, A, 1, [Cmax] __device__(math_t A) { return Cmax / A; }, stream);
   } else {
     const int n_inactive = n_cols - n_active;
     if (G == nullptr) {
@@ -667,7 +655,7 @@ void calcMaxStep(const raft::handle_t& handle,
       return val;
     };
     raft::linalg::mapThenReduce(
-      gamma, n_inactive, huge, map, cub::Min(), stream, cor + n_active, a_vec);
+      gamma, n_inactive, huge, map, cuda::minimum{}, stream, cor + n_active, a_vec);
   }
 }
 
@@ -884,17 +872,17 @@ void larsFit(const raft::handle_t& handle,
              idx_t* active_idx,
              math_t* alphas,
              idx_t* n_active,
-             math_t* Gram      = nullptr,
-             int max_iter      = 500,
-             math_t* coef_path = nullptr,
-             int verbosity     = 0,
-             idx_t ld_X        = 0,
-             idx_t ld_G        = 0,
-             math_t eps        = -1)
+             math_t* Gram                        = nullptr,
+             int max_iter                        = 500,
+             math_t* coef_path                   = nullptr,
+             rapids_logger::level_enum verbosity = rapids_logger::level_enum::off,
+             idx_t ld_X                          = 0,
+             idx_t ld_G                          = 0,
+             math_t eps                          = -1)
 {
   ASSERT(n_cols > 0, "Parameter n_cols: number of columns cannot be less than one");
   ASSERT(n_rows > 0, "Parameter n_rows: number of rows cannot be less than one");
-  ML::Logger::get().setLevel(verbosity);
+  ML::default_logger().set_level(verbosity);
 
   // Set default ld parameters if needed.
   if (ld_X == 0) ld_X = n_rows;

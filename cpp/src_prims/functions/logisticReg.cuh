@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2018-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -70,10 +59,10 @@ void logisticRegLossGrads(const raft::handle_t& handle,
 
   logisticRegH(handle, input, n_rows, n_cols, coef, labels_pred.data(), math_t(0), stream);
   raft::linalg::subtract(labels_pred.data(), labels_pred.data(), labels, n_rows, stream);
-  raft::matrix::matrixVectorBinaryMult(
-    input, labels_pred.data(), n_rows, n_cols, false, false, stream);
+  raft::matrix::matrixVectorBinaryMult<false, false>(
+    input, labels_pred.data(), n_rows, n_cols, stream);
 
-  raft::stats::mean(grads, input, n_cols, n_rows, false, false, stream);
+  raft::stats::mean<false>(grads, input, n_cols, n_rows, false, stream);
 
   rmm::device_uvector<math_t> pen_grads(0, stream);
 
@@ -136,7 +125,7 @@ void logisticRegLoss(const raft::handle_t& handle,
   logisticRegH(handle, input, n_rows, n_cols, coef, labels_pred.data(), math_t(0), stream);
   logLoss(labels_pred.data(), labels, labels_pred.data(), n_rows, stream);
 
-  raft::stats::mean(loss, labels_pred.data(), 1, n_rows, false, false, stream);
+  raft::stats::mean<false>(loss, labels_pred.data(), 1, n_rows, false, stream);
 
   rmm::device_uvector<math_t> pen_val(0, stream);
 

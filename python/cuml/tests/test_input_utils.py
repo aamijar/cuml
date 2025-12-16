@@ -1,42 +1,24 @@
 #
-# Copyright (c) 2019-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
+import cudf
+import cupy as cp
 import numpy as np
-from pandas import Series as pdSeries
-from cuml.manifold import umap
-from cuml.internals.safe_imports import cpu_only_import_from
-from cuml.internals.safe_imports import gpu_only_import_from
-from cuml.internals.input_utils import convert_dtype
-from cuml.common import has_cupy
-from cuml.internals.input_utils import input_to_cupy_array
-from cuml.common import input_to_host_array
-from cuml.common import input_to_cuml_array, CumlArray
-from cuml.internals.safe_imports import cpu_only_import
-import pytest
 import pandas as pd
+import pytest
+from cudf.pandas import LOADED as cudf_pandas_active
+from numba import cuda as nbcuda
+from pandas import Series as pdSeries
 
-from cuml.internals.safe_imports import gpu_only_import
-
-cudf = gpu_only_import("cudf")
-cp = gpu_only_import("cupy")
-np = cpu_only_import("numpy")
-
-nbcuda = gpu_only_import_from("numba", "cuda")
-pdDF = cpu_only_import_from("pandas", "DataFrame")
-
+from cuml.common import CumlArray, input_to_cuml_array, input_to_host_array
+from cuml.internals.input_utils import (
+    convert_dtype,
+    input_to_cupy_array,
+    is_array_like,
+)
+from cuml.manifold import umap
 
 ###############################################################################
 #                                    Parameters                               #
@@ -193,16 +175,32 @@ def test_input_to_host_array(dtype, input_type, num_rows, num_cols, order):
     if input_type == "cupy" and input_data is None:
         pytest.skip("cupy not installed")
 
-    X, n_rows, n_cols, dtype = input_to_host_array(input_data, order=order)
+    X, n_rows, n_cols, out_dtype = input_to_host_array(input_data, order=order)
 
     np.testing.assert_equal(X, real_data)
 
     assert n_rows == num_rows
     assert n_cols == num_cols
-    assert dtype == dtype
+    assert out_dtype == dtype
 
     del input_data
     del real_data
+
+
+@pytest.mark.parametrize("dtype", test_dtypes_acceptable)
+@pytest.mark.parametrize("input_type", ["numpy", "cupy"])
+@pytest.mark.parametrize("order", ["C", "F", "K"])
+def test_non_contiguous_input_to_host_array(dtype, input_type, order):
+    input_data, real_data = get_input(input_type, 10, 8, dtype)
+    input_data = input_data[:-3]
+    real_data = real_data[:-3]
+
+    res = input_to_host_array(input_data, order=order).array
+    np.testing.assert_equal(real_data, res)
+    if order == "F":
+        assert res.flags.f_contiguous
+    else:
+        assert res.flags.c_contiguous
 
 
 @pytest.mark.parametrize("dtype", test_dtypes_all)
@@ -210,7 +208,6 @@ def test_input_to_host_array(dtype, input_type, num_rows, num_cols, order):
 @pytest.mark.parametrize("input_type", test_input_types)
 @pytest.mark.parametrize("order", ["C", "F"])
 def test_dtype_check(dtype, check_dtype, input_type, order):
-
     if (
         dtype == np.float16 or check_dtype == np.float16
     ) and input_type != "numpy":
@@ -246,7 +243,6 @@ def test_dtype_check(dtype, check_dtype, input_type, order):
 def test_convert_input_dtype(
     from_dtype, to_dtype, input_type, num_rows, num_cols, order
 ):
-
     if from_dtype == np.float16 and input_type != "numpy":
         pytest.xfail("float16 not yet supported by numba/cuDF")
 
@@ -255,11 +251,6 @@ def test_convert_input_dtype(
             pytest.xfail(
                 "unsigned int types not yet supported by \
                          cuDF"
-            )
-        elif not has_cupy():
-            pytest.xfail(
-                "unsigned int types not yet supported by \
-                         cuDF and cuPy is not installed."
             )
 
     input_data, real_data = get_input(
@@ -366,11 +357,12 @@ def check_numpy_order(ary, order):
 
 def check_ptr(a, b, input_type):
     if input_type == "cudf":
-        for (_, col_a), (_, col_b) in zip(a._data.items(), b._data.items()):
-            with cudf.core.buffer.acquire_spill_lock():
-                assert col_a.base_data.get_ptr(
-                    mode="read"
-                ) == col_b.base_data.get_ptr(mode="read")
+        for col_a, col_b in zip(a._columns, b._columns, strict=True):
+            # get_ptr could spill the buffer data, but possibly OK
+            # if this is only used for testing
+            assert col_a.base_data.get_ptr(
+                mode="read"
+            ) == col_b.base_data.get_ptr(mode="read")
     else:
 
         def get_ptr(x):
@@ -408,7 +400,7 @@ def get_input(
         result = cudf.Series(rand_mat.reshape(nrows), index=index)
 
     if type == "pandas":
-        result = pdDF(cp.asnumpy(rand_mat), index=index)
+        result = pd.DataFrame(cp.asnumpy(rand_mat), index=index)
 
     if type == "pandas-series":
         result = pdSeries(
@@ -446,11 +438,14 @@ def test_tocupy_missing_values_handling():
     assert str(array.dtype) == "float64"
     assert cp.isnan(array[1])
 
-    with pytest.raises(ValueError):
-        df = cudf.Series(data=[7, None, 3])
-        array, n_rows, n_cols, dtype = input_to_cupy_array(
-            df, fail_on_null=True
-        )
+    # cudf.pandas now mimics pandas better for handling None, so we don't
+    # need to fail and raise this error when cudf.pandas is active.
+    if not cudf_pandas_active:
+        with pytest.raises(ValueError):
+            df = cudf.Series(data=[7, None, 3])
+            array, n_rows, n_cols, dtype = input_to_cupy_array(
+                df, fail_on_null=True
+            )
 
 
 @pytest.mark.cudf_pandas
@@ -466,3 +461,18 @@ def test_numpy_output():
     # Check that this is a cudf.pandas wrapped array
     assert hasattr(X, "_fsproxy_fast_type")
     assert isinstance(reducer.fit_transform(X), np.ndarray)
+
+
+def test_is_array_like_with_lists():
+    """Test is_array_like function with list/tuple inputs."""
+    # Test lists and tuples are accepted when accept_lists=True
+    assert is_array_like([1, 2, 3], accept_lists=True)
+    assert is_array_like((1, 2, 3), accept_lists=True)
+
+    # Test lists and tuples are rejected when accept_lists=False
+    assert not is_array_like([1, 2, 3], accept_lists=False)
+    assert not is_array_like((1, 2, 3), accept_lists=False)
+
+    # Test numpy arrays are always accepted
+    assert is_array_like(np.array([1, 2, 3]), accept_lists=True)
+    assert is_array_like(np.array([1, 2, 3]), accept_lists=False)

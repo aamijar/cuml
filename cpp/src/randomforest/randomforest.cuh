@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -26,7 +15,10 @@
 #include <raft/stats/regression_metrics.cuh>
 #include <raft/util/cudart_utils.hpp>
 
-#include <thrust/execution_policy.h>
+#include <rmm/exec_policy.hpp>
+
+#include <thrust/fill.h>
+#include <thrust/for_each.h>
 #include <thrust/sequence.h>
 
 #include <decisiontree/batched-levelalgo/quantiles.cuh>
@@ -43,6 +35,7 @@
 #include <map>
 
 namespace ML {
+
 template <class T, class L>
 class RandomForest {
  protected:
@@ -67,7 +60,7 @@ class RandomForest {
 
     } else {
       // Use all the samples from the dataset
-      thrust::sequence(thrust::cuda::par.on(stream), selected_rows->begin(), selected_rows->end());
+      thrust::sequence(rmm::exec_policy(stream), selected_rows->begin(), selected_rows->end());
     }
   }
 
@@ -96,7 +89,7 @@ class RandomForest {
    * @param[in] cfg_rf_type: Task type: 0 for classification, 1 for regression
    */
   RandomForest(RF_params cfg_rf_params, int cfg_rf_type = RF_type::CLASSIFICATION)
-    : rf_params(cfg_rf_params), rf_type(cfg_rf_type){};
+    : rf_params(cfg_rf_params), rf_type(cfg_rf_type) {};
 
   /**
    * @brief Build (i.e., fit, train) random forest for input data.
@@ -113,6 +106,8 @@ class RandomForest {
   * @param[in] n_unique_labels: (meaningful only for classification) #unique label values (known
   during preprocessing)
   * @param[in] forest: CPU point to RandomForestMetaData struct.
+  * @param[out] bootstrap_masks: optional device pointer to store bootstrap masks
+  *   (n_trees * n_rows), only populated if a non-null pointer is provided
   */
   void fit(const raft::handle_t& user_handle,
            const T* input,
@@ -120,7 +115,8 @@ class RandomForest {
            int n_cols,
            L* labels,
            int n_unique_labels,
-           RandomForestMetaData<T, L>*& forest)
+           RandomForestMetaData<T, L>* forest,
+           bool* bootstrap_masks = nullptr)
   {
     raft::common::nvtx::range fun_scope("RandomForest::fit @randomforest.cuh");
     this->error_checking(input, labels, n_rows, n_cols, false);
@@ -161,6 +157,8 @@ class RandomForest {
       selected_rows.emplace_back(n_sampled_rows, handle.get_stream_from_stream_pool(i));
     }
 
+    forest->n_features = n_cols;
+
 #pragma omp parallel for num_threads(n_streams)
     for (int i = 0; i < this->rf_params.n_trees; i++) {
       int stream_id = omp_get_thread_num();
@@ -189,6 +187,20 @@ class RandomForest {
                                                this->rf_params.seed,
                                                quantiles,
                                                i);
+
+      // Store bootstrap mask if device buffer is provided
+      if (bootstrap_masks != nullptr) {
+        // Calculate pointer offset for this tree's mask
+        bool* tree_mask = bootstrap_masks + (i * n_rows);
+
+        // Use Thrust to create boolean mask: first fill with false, then mark selected rows
+        thrust::fill(rmm::exec_policy(s), tree_mask, tree_mask + n_rows, false);
+        thrust::scatter(rmm::exec_policy(s),
+                        thrust::make_constant_iterator(true),
+                        thrust::make_constant_iterator(true) + n_sampled_rows,
+                        selected_rows[stream_id].data(),
+                        tree_mask);
+      }
     }
     // Cleanup
     handle.sync_stream_pool();
@@ -211,9 +223,9 @@ class RandomForest {
                int n_cols,
                L* predictions,
                const RandomForestMetaData<T, L>* forest,
-               int verbosity) const
+               rapids_logger::level_enum verbosity) const
   {
-    ML::Logger::get().setLevel(verbosity);
+    ML::default_logger().set_level(verbosity);
     this->error_checking(input, predictions, n_rows, n_cols, true);
     std::vector<L> h_predictions(n_rows);
     cudaStream_t stream = user_handle.get_stream();
@@ -224,7 +236,7 @@ class RandomForest {
 
     int row_size = n_cols;
 
-    ML::PatternSetter _("%v");
+    default_logger().set_pattern("%v");
     for (int row_id = 0; row_id < n_rows; row_id++) {
       std::vector<T> row_prediction(forest->trees[0]->num_outputs);
       for (int i = 0; i < this->rf_params.n_trees; i++) {
@@ -258,6 +270,7 @@ class RandomForest {
 
     raft::update_device(predictions, h_predictions.data(), n_rows, stream);
     user_handle.sync_stream(stream);
+    default_logger().set_pattern(default_pattern());
   }
 
   /**
@@ -276,16 +289,16 @@ class RandomForest {
                           const L* ref_labels,
                           int n_rows,
                           const L* predictions,
-                          int verbosity,
+                          rapids_logger::level_enum verbosity,
                           int rf_type = RF_type::CLASSIFICATION)
   {
-    ML::Logger::get().setLevel(verbosity);
+    ML::default_logger().set_level(verbosity);
     cudaStream_t stream = user_handle.get_stream();
     RF_metrics stats;
     if (rf_type == RF_type::CLASSIFICATION) {  // task classifiation: get classification metrics
       float accuracy = raft::stats::accuracy(predictions, ref_labels, n_rows, stream);
       stats          = set_rf_metrics_classification(accuracy);
-      if (ML::Logger::get().shouldLogFor(CUML_LEVEL_DEBUG)) print(stats);
+      if (ML::default_logger().should_log(rapids_logger::level_enum::debug)) print(stats);
 
       /* TODO: Potentially augment RF_metrics w/ more metrics (e.g., precision, F1, etc.).
         For non binary classification problems (i.e., one target and  > 2 labels), need avg.
@@ -300,7 +313,7 @@ class RandomForest {
                                       mean_squared_error,
                                       median_abs_error);
       stats = set_rf_metrics_regression(mean_abs_error, mean_squared_error, median_abs_error);
-      if (ML::Logger::get().shouldLogFor(CUML_LEVEL_DEBUG)) print(stats);
+      if (ML::default_logger().should_log(rapids_logger::level_enum::debug)) print(stats);
     }
 
     return stats;

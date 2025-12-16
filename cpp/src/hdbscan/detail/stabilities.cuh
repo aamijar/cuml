@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2021-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -97,16 +86,26 @@ void compute_stabilities(const raft::handle_t& handle,
                    thrust::make_counting_iterator(n_edges),
                    births_init_op);
 
-  cudaError_t (*reduce_func)(void*,
-                             size_t&,
-                             const value_t*,
-                             value_t*,
-                             int,
-                             const value_idx*,
-                             const value_idx*,
-                             cudaStream_t,
-                             bool) =
-    cub::DeviceSegmentedReduce::Min<const value_t*, value_t*, const value_idx*, const value_idx*>;
+  // CCCL has changed `num_segments` to int64_t to support larger segment sizes
+  // Avoid explicitly instantiating a given overload but rely on conversion from int
+  auto reduce_func = [](void* d_temp_storage,
+                        size_t& temp_storage_bytes,
+                        const value_t* d_in,
+                        value_t* d_out,
+                        int num_segments,
+                        const value_idx* d_begin_offsets,
+                        const value_idx* d_end_offsets,
+                        cudaStream_t stream = 0) -> cudaError_t {
+    return cub::DeviceSegmentedReduce::Min(d_temp_storage,
+                                           temp_storage_bytes,
+                                           d_in,
+                                           d_out,
+                                           num_segments,
+                                           d_begin_offsets,
+                                           d_end_offsets,
+                                           stream);
+  };
+
   Utils::cub_segmented_reduce(lambdas,
                               births_parent_min.data() + 1,
                               n_clusters - 1,
@@ -172,7 +171,7 @@ void get_stability_scores(const raft::handle_t& handle,
 
   value_idx* sizes = cluster_sizes.data();
   thrust::for_each(exec_policy, labels, labels + n_leaves, [=] __device__(value_idx v) {
-    if (v > -1) atomicAdd(sizes + v, 1);
+    if (v > -1) atomicAdd(sizes + v, static_cast<value_idx>(1));
   });
 
   /**

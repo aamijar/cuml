@@ -1,21 +1,11 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
 
+#include <cuml/common/distance_type.hpp>
 #include <cuml/common/logger.hpp>
 #include <cuml/neighbors/knn_mg.hpp>
 
@@ -23,10 +13,10 @@
 #include <cumlprims/opg/matrix/part_descriptor.hpp>
 #include <raft/core/comms.hpp>
 #include <raft/core/handle.hpp>
-#include <raft/spatial/knn/knn.cuh>
 #include <raft/util/cuda_utils.cuh>
 #include <raft/util/cudart_utils.hpp>
 
+#include <cuvs/neighbors/knn_merge_parts.hpp>
 #include <selection/knn.cuh>
 
 #include <cstddef>
@@ -403,11 +393,7 @@ void broadcast_query(opg_knn_work<in_t, ind_t, dist_t, out_t>& work,
     ++request_idx;
   }
 
-  try {
-    handle.get_comms().waitall(requests.size(), requests.data());
-  } catch (raft::exception& e) {
-    CUML_LOG_DEBUG("FAILURE!");
-  }
+  handle.get_comms().waitall(requests.size(), requests.data());
 }
 
 /*!
@@ -426,7 +412,7 @@ void perform_local_knn(opg_knn_param<in_t, ind_t, dist_t, out_t>& params,
                        size_t query_size)
 {
   std::vector<in_t*> ptrs(params.idx_data->size());
-  std::vector<std::size_t> sizes(params.idx_data->size());
+  std::vector<int> sizes(params.idx_data->size());
 
   for (std::size_t cur_idx = 0; cur_idx < params.idx_data->size(); cur_idx++) {
     ptrs[cur_idx]  = params.idx_data->at(cur_idx)->ptr;
@@ -443,20 +429,20 @@ void perform_local_knn(opg_knn_param<in_t, ind_t, dist_t, out_t>& params,
 
   // ID ranges need to be offset by each local partition's
   // starting indices.
-  raft::spatial::knn::brute_force_knn<std::int64_t, float, std::size_t>(
-    handle,
-    ptrs,
-    sizes,
-    params.idx_desc->N,
-    query,
-    query_size,
-    work.res_I.data(),
-    work.res_D.data(),
-    params.k,
-    params.rowMajorIndex,
-    params.rowMajorQuery,
-    &start_indices_long,
-    raft::distance::DistanceType::L2SqrtExpanded);
+  brute_force_knn(handle,
+                  ptrs,
+                  sizes,
+                  params.idx_desc->N,
+                  query,
+                  query_size,
+                  work.res_I.data(),
+                  work.res_D.data(),
+                  params.k,
+                  params.rowMajorIndex,
+                  params.rowMajorQuery,
+                  distance::DistanceType::L2SqrtExpanded,
+                  2.0f,
+                  &start_indices_long);
   handle.sync_stream(handle.get_stream());
   RAFT_CUDA_TRY(cudaPeekAtLastError());
 }
@@ -672,11 +658,7 @@ void exchange_results(opg_knn_param<in_t, ind_t, dist_t, out_t>& params,
     }
   }
 
-  try {
-    handle.get_comms().waitall(requests.size(), requests.data());
-  } catch (raft::exception& e) {
-    CUML_LOG_DEBUG("FAILURE!");
-  }
+  handle.get_comms().waitall(requests.size(), requests.data());
 }
 
 /*!
@@ -723,15 +705,15 @@ void reduce(opg_knn_param<in_t, ind_t, dist_t, out_t>& params,
   }
 
   // Merge all KNN local results
-  raft::spatial::knn::knn_merge_parts(work.res_D.data(),
-                                      work.res_I.data(),
-                                      distances,
-                                      indices,
-                                      batch_size,
-                                      work.idxRanks.size(),
-                                      params.k,
-                                      handle.get_stream(),
-                                      trans.data());
+  cuvs::neighbors::knn_merge_parts(
+    handle,
+    raft::make_device_matrix_view<const dist_t, int64_t>(
+      work.res_D.data(), batch_size * work.idxRanks.size(), params.k),
+    raft::make_device_matrix_view<const ind_t, int64_t>(
+      work.res_I.data(), batch_size * work.idxRanks.size(), params.k),
+    raft::make_device_matrix_view<dist_t, int64_t>(distances, batch_size, params.k),
+    raft::make_device_matrix_view<ind_t, int64_t>(indices, batch_size, params.k),
+    raft::make_device_vector_view<trans_t, int64_t>(trans.data(), trans.size()));
   handle.sync_stream(handle.get_stream());
   RAFT_CUDA_TRY(cudaPeekAtLastError());
 
@@ -966,7 +948,7 @@ void perform_local_operation(opg_knn_param<in_t, ind_t, dist_t, out_t>& params,
                                                  *(params.uniq_labels),
                                                  *(params.n_unique));
       break;
-    default: CUML_LOG_DEBUG("FAILURE!");
+    default: CUML_LOG_DEBUG("Not a valid operation.");
   }
 }
 

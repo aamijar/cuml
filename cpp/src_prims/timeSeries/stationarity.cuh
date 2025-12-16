@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 /**
@@ -174,7 +163,7 @@ CUML_KERNEL void kpss_stationarity_check_kernel(bool* results,
  * Found in thrust/examples/scan_matrix_by_rows.cu
  */
 template <typename IdxT>
-struct which_col : thrust::unary_function<IdxT, IdxT> {
+struct which_col {
   IdxT col_length;
   __host__ __device__ which_col(IdxT col_length_) : col_length(col_length_) {}
   __host__ __device__ IdxT operator()(IdxT idx) const { return idx / col_length; }
@@ -214,34 +203,30 @@ static void _kpss_test(const DataT* d_y,
 
   // Compute mean
   rmm::device_uvector<DataT> y_means(batch_size, stream);
-  raft::stats::mean(y_means.data(), d_y, batch_size, n_obs, false, false, stream);
+  raft::stats::mean<false>(y_means.data(), d_y, batch_size, n_obs, false, stream);
 
   // Center the data around its mean
   rmm::device_uvector<DataT> y_cent(batch_size * n_obs, stream);
-  raft::linalg::matrixVectorOp(
+  raft::linalg::matrixVectorOp<false, true>(
     y_cent.data(),
     d_y,
     y_means.data(),
     batch_size,
     n_obs,
-    false,
-    true,
     [] __device__(DataT a, DataT b) { return a - b; },
     stream);
 
   // This calculates the first sum in eq. 10 (first part of s^2)
   rmm::device_uvector<DataT> s2A(batch_size, stream);
-  raft::linalg::reduce(s2A.data(),
-                       y_cent.data(),
-                       batch_size,
-                       n_obs,
-                       static_cast<DataT>(0.0),
-                       false,
-                       false,
-                       stream,
-                       false,
-                       raft::L2Op<DataT>(),
-                       raft::add_op());
+  raft::linalg::reduce<false, false>(s2A.data(),
+                                     y_cent.data(),
+                                     batch_size,
+                                     n_obs,
+                                     static_cast<DataT>(0.0),
+                                     stream,
+                                     false,
+                                     raft::L2Op<DataT>(),
+                                     raft::add_op());
 
   // From Kwiatkowski et al. referencing Schwert (1989)
   DataT lags_f = ceil(12.0 * pow(n_obs_f / 100.0, 0.25));
@@ -263,15 +248,8 @@ static void _kpss_test(const DataT* d_y,
     coeff_base);
   RAFT_CUDA_TRY(cudaPeekAtLastError());
   rmm::device_uvector<DataT> s2B(batch_size, stream);
-  raft::linalg::reduce(s2B.data(),
-                       accumulator.data(),
-                       batch_size,
-                       n_obs,
-                       static_cast<DataT>(0.0),
-                       false,
-                       false,
-                       stream,
-                       false);
+  raft::linalg::reduce<false, false>(
+    s2B.data(), accumulator.data(), batch_size, n_obs, static_cast<DataT>(0.0), stream, false);
 
   // Cumulative sum (inclusive scan with + operator)
   thrust::counting_iterator<IdxT> c_first(0);
@@ -285,17 +263,15 @@ static void _kpss_test(const DataT* d_y,
 
   // Eq. 11 (eta)
   rmm::device_uvector<DataT> eta(batch_size, stream);
-  raft::linalg::reduce(eta.data(),
-                       accumulator.data(),
-                       batch_size,
-                       n_obs,
-                       static_cast<DataT>(0.0),
-                       false,
-                       false,
-                       stream,
-                       false,
-                       raft::L2Op<DataT>(),
-                       raft::add_op());
+  raft::linalg::reduce<false, false>(eta.data(),
+                                     accumulator.data(),
+                                     batch_size,
+                                     n_obs,
+                                     static_cast<DataT>(0.0),
+                                     stream,
+                                     false,
+                                     raft::L2Op<DataT>(),
+                                     raft::add_op());
 
   /* The following kernel will decide whether each series is stationary based on
    * s^2 and eta */

@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2018-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #pragma once
 
@@ -323,8 +312,8 @@ inline T nrm2(const SimpleVec<T>& u, T* tmp_dev, cudaStream_t stream)
 template <typename T>
 inline T nrm1(const SimpleVec<T>& u, T* tmp_dev, cudaStream_t stream)
 {
-  raft::linalg::rowNorm(
-    tmp_dev, u.data, u.len, 1, raft::linalg::L1Norm, true, stream, raft::Nop<T>());
+  raft::linalg::rowNorm<raft::linalg::NormType::L1Norm, true>(
+    tmp_dev, u.data, u.len, 1, stream, raft::Nop<T>());
   T tmp_host;
   raft::update_host(&tmp_host, tmp_dev, 1, stream);
   raft::interruptible::synchronize(stream);

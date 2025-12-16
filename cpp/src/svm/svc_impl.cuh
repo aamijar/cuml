@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -24,17 +13,17 @@
 #include "kernelcache.cuh"
 #include "smosolver.cuh"
 
+#include <cuml/matrix/kernel_params.hpp>
 #include <cuml/svm/svm_model.h>
 #include <cuml/svm/svm_parameter.h>
 
 #include <raft/core/handle.hpp>
-#include <raft/distance/kernels.cuh>
 #include <raft/label/classlabels.cuh>
 #include <raft/linalg/gemv.cuh>
 
 #include <rmm/aligned.hpp>
 #include <rmm/device_uvector.hpp>
-#include <rmm/mr/device/per_device_resource.hpp>
+#include <rmm/mr/per_device_resource.hpp>
 #include <rmm/resource_ref.hpp>
 
 #include <thrust/copy.h>
@@ -43,6 +32,8 @@
 #include <thrust/iterator/counting_iterator.h>
 
 #include <cublas_v2.h>
+#include <cuvs/distance/distance.hpp>
+#include <cuvs/distance/grammian.hpp>
 
 #include <iostream>
 
@@ -50,15 +41,15 @@ namespace ML {
 namespace SVM {
 
 template <typename math_t, typename MatrixViewType>
-void svcFitX(const raft::handle_t& handle,
-             MatrixViewType matrix,
-             int n_rows,
-             int n_cols,
-             math_t* labels,
-             const SvmParameter& param,
-             raft::distance::kernels::KernelParams& kernel_params,
-             SvmModel<math_t>& model,
-             const math_t* sample_weight)
+int svcFitX(const raft::handle_t& handle,
+            MatrixViewType matrix,
+            int n_rows,
+            int n_cols,
+            math_t* labels,
+            const SvmParameter& param,
+            ML::matrix::KernelParams& kernel_params,
+            SvmModel<math_t>& model,
+            const math_t* sample_weight)
 {
   ASSERT(n_cols > 0, "Parameter n_cols: number of columns cannot be less than one");
   ASSERT(n_rows > 0, "Parameter n_rows: number of rows cannot be less than one");
@@ -73,8 +64,7 @@ void svcFitX(const raft::handle_t& handle,
     rmm::device_uvector<math_t> unique_labels(0, stream);
     model.n_classes = raft::label::getUniquelabels(unique_labels, labels, n_rows, stream);
     rmm::device_async_resource_ref rmm_alloc = rmm::mr::get_current_device_resource();
-    model.unique_labels                      = (math_t*)rmm_alloc.allocate_async(
-      model.n_classes * sizeof(math_t), rmm::CUDA_ALLOCATION_ALIGNMENT, stream);
+    model.unique_labels = (math_t*)rmm_alloc.allocate(stream, model.n_classes * sizeof(math_t));
     raft::copy(model.unique_labels, unique_labels.data(), model.n_classes, stream);
     handle_impl.sync_stream(stream);
   }
@@ -85,9 +75,12 @@ void svcFitX(const raft::handle_t& handle,
   raft::label::getOvrlabels(
     labels, n_rows, model.unique_labels, model.n_classes, y.data(), 1, stream);
 
-  raft::distance::kernels::GramMatrixBase<math_t>* kernel =
-    raft::distance::kernels::KernelFactory<math_t>::create(kernel_params);
-  SmoSolver<math_t> smo(handle_impl, param, kernel_params.kernel, kernel);
+  cuvs::distance::kernels::GramMatrixBase<math_t>* kernel =
+    cuvs::distance::kernels::KernelFactory<math_t>::create(kernel_params.to_cuvs());
+  SmoSolver<math_t> smo(handle_impl,
+                        param,
+                        static_cast<cuvs::distance::kernels::KernelType>(kernel_params.kernel),
+                        kernel);
   smo.Solve(matrix,
             n_rows,
             n_cols,
@@ -98,46 +91,49 @@ void svcFitX(const raft::handle_t& handle,
             &(model.support_matrix),
             &(model.support_idx),
             &(model.b),
-            param.max_iter);
+            param.max_iter,
+            param.max_outer_iter);
   model.n_cols = n_cols;
   handle_impl.sync_stream(stream);
   delete kernel;
+  return smo.GetNIter();
 }
 
 template <typename math_t>
-void svcFit(const raft::handle_t& handle,
-            math_t* input,
-            int n_rows,
-            int n_cols,
-            math_t* labels,
-            const SvmParameter& param,
-            raft::distance::kernels::KernelParams& kernel_params,
-            SvmModel<math_t>& model,
-            const math_t* sample_weight)
+int svcFit(const raft::handle_t& handle,
+           math_t* input,
+           int n_rows,
+           int n_cols,
+           math_t* labels,
+           const SvmParameter& param,
+           ML::matrix::KernelParams& kernel_params,
+           SvmModel<math_t>& model,
+           const math_t* sample_weight)
 {
   auto dense_view = raft::make_device_strided_matrix_view<math_t, int, raft::layout_f_contiguous>(
     input, n_rows, n_cols, 0);
-  svcFitX(handle, dense_view, n_rows, n_cols, labels, param, kernel_params, model, sample_weight);
+  return svcFitX(
+    handle, dense_view, n_rows, n_cols, labels, param, kernel_params, model, sample_weight);
 }
 
 template <typename math_t>
-void svcFitSparse(const raft::handle_t& handle,
-                  int* indptr,
-                  int* indices,
-                  math_t* data,
-                  int n_rows,
-                  int n_cols,
-                  int nnz,
-                  math_t* labels,
-                  const SvmParameter& param,
-                  raft::distance::kernels::KernelParams& kernel_params,
-                  SvmModel<math_t>& model,
-                  const math_t* sample_weight)
+int svcFitSparse(const raft::handle_t& handle,
+                 int* indptr,
+                 int* indices,
+                 math_t* data,
+                 int n_rows,
+                 int n_cols,
+                 int nnz,
+                 math_t* labels,
+                 const SvmParameter& param,
+                 ML::matrix::KernelParams& kernel_params,
+                 SvmModel<math_t>& model,
+                 const math_t* sample_weight)
 {
   auto csr_structure_view = raft::make_device_compressed_structure_view<int, int, int>(
     indptr, indices, n_rows, n_cols, nnz);
   auto csr_matrix_view = raft::make_device_csr_matrix_view(data, csr_structure_view);
-  svcFitX(
+  return svcFitX(
     handle, csr_matrix_view, n_rows, n_cols, labels, param, kernel_params, model, sample_weight);
 }
 
@@ -146,7 +142,7 @@ void svcPredictX(const raft::handle_t& handle,
                  MatrixViewType matrix,
                  int n_rows,
                  int n_cols,
-                 raft::distance::kernels::KernelParams& kernel_params,
+                 ML::matrix::KernelParams& kernel_params,
                  const SvmModel<math_t>& model,
                  math_t* preds,
                  math_t buffer_size,
@@ -172,8 +168,8 @@ void svcPredictX(const raft::handle_t& handle,
     RAFT_CUDA_TRY(cudaMemsetAsync(y.data(), 0, n_rows * sizeof(math_t), stream));
   }
 
-  raft::distance::kernels::GramMatrixBase<math_t>* kernel =
-    raft::distance::kernels::KernelFactory<math_t>::create(kernel_params);
+  cuvs::distance::kernels::GramMatrixBase<math_t>* kernel =
+    cuvs::distance::kernels::KernelFactory<math_t>::create(kernel_params.to_cuvs());
 
   /*
     // kernel computation:
@@ -218,7 +214,8 @@ void svcPredictX(const raft::handle_t& handle,
       : raft::make_device_csr_matrix_view<math_t, int, int, int>(nullptr, csr_structure_view);
 
   bool transpose_kernel = is_csr_support && !is_csr_input;
-  if (model.n_support > 0 && kernel_params.kernel == raft::distance::kernels::RBF) {
+  if (model.n_support > 0 && static_cast<cuvs::distance::kernels::KernelType>(
+                               kernel_params.kernel) == cuvs::distance::kernels::RBF) {
     l2_input.resize(n_rows, stream);
     l2_support.resize(model.n_support, stream);
     ML::SVM::matrixRowNorm(handle, matrix, l2_input.data(), raft::linalg::NormType::L2Norm);
@@ -312,7 +309,7 @@ void svcPredict(const raft::handle_t& handle,
                 math_t* input,
                 int n_rows,
                 int n_cols,
-                raft::distance::kernels::KernelParams& kernel_params,
+                ML::matrix::KernelParams& kernel_params,
                 const SvmModel<math_t>& model,
                 math_t* preds,
                 math_t buffer_size,
@@ -332,7 +329,7 @@ void svcPredictSparse(const raft::handle_t& handle,
                       int n_rows,
                       int n_cols,
                       int nnz,
-                      raft::distance::kernels::KernelParams& kernel_params,
+                      ML::matrix::KernelParams& kernel_params,
                       const SvmModel<math_t>& model,
                       math_t* preds,
                       math_t buffer_size,
@@ -357,43 +354,25 @@ void svmFreeBuffers(const raft::handle_t& handle, SvmModel<math_t>& m)
 {
   cudaStream_t stream                      = handle.get_stream();
   rmm::device_async_resource_ref rmm_alloc = rmm::mr::get_current_device_resource();
-  if (m.dual_coefs)
-    rmm_alloc.deallocate_async(
-      m.dual_coefs, m.n_support * sizeof(math_t), rmm::CUDA_ALLOCATION_ALIGNMENT, stream);
-  if (m.support_idx)
-    rmm_alloc.deallocate_async(
-      m.support_idx, m.n_support * sizeof(int), rmm::CUDA_ALLOCATION_ALIGNMENT, stream);
+  if (m.dual_coefs) rmm_alloc.deallocate(stream, m.dual_coefs, m.n_support * sizeof(math_t));
+  if (m.support_idx) rmm_alloc.deallocate(stream, m.support_idx, m.n_support * sizeof(int));
   if (m.support_matrix.indptr) {
-    rmm_alloc.deallocate_async(m.support_matrix.indptr,
-                               (m.n_support + 1) * sizeof(int),
-                               rmm::CUDA_ALLOCATION_ALIGNMENT,
-                               stream);
+    rmm_alloc.deallocate(stream, m.support_matrix.indptr, (m.n_support + 1) * sizeof(int));
     m.support_matrix.indptr = nullptr;
   }
   if (m.support_matrix.indices) {
-    rmm_alloc.deallocate_async(m.support_matrix.indices,
-                               m.support_matrix.nnz * sizeof(int),
-                               rmm::CUDA_ALLOCATION_ALIGNMENT,
-                               stream);
+    rmm_alloc.deallocate(stream, m.support_matrix.indices, m.support_matrix.nnz * sizeof(int));
     m.support_matrix.indices = nullptr;
   }
   if (m.support_matrix.data) {
     if (m.support_matrix.nnz == -1) {
-      rmm_alloc.deallocate_async(m.support_matrix.data,
-                                 m.n_support * m.n_cols * sizeof(math_t),
-                                 rmm::CUDA_ALLOCATION_ALIGNMENT,
-                                 stream);
+      rmm_alloc.deallocate(stream, m.support_matrix.data, m.n_support * m.n_cols * sizeof(math_t));
     } else {
-      rmm_alloc.deallocate_async(m.support_matrix.data,
-                                 m.support_matrix.nnz * sizeof(math_t),
-                                 rmm::CUDA_ALLOCATION_ALIGNMENT,
-                                 stream);
+      rmm_alloc.deallocate(stream, m.support_matrix.data, m.support_matrix.nnz * sizeof(math_t));
     }
   }
   m.support_matrix.nnz = -1;
-  if (m.unique_labels)
-    rmm_alloc.deallocate_async(
-      m.unique_labels, m.n_classes * sizeof(math_t), rmm::CUDA_ALLOCATION_ALIGNMENT, stream);
+  if (m.unique_labels) rmm_alloc.deallocate(stream, m.unique_labels, m.n_classes * sizeof(math_t));
   m.dual_coefs    = nullptr;
   m.support_idx   = nullptr;
   m.unique_labels = nullptr;

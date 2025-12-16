@@ -1,29 +1,16 @@
 #
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
+
+import cudf
+import cupy as cp
+import numpy as np
+import pytest
+from pylibraft.common.handle import Handle
 
 from cuml import LinearRegression as cuLR
 from cuml.explainer.base import SHAPBase
-from pylibraft.common.handle import Handle
-import pytest
-from cuml.internals.safe_imports import cpu_only_import
-from cuml.internals.safe_imports import gpu_only_import
-
-cudf = gpu_only_import("cudf")
-cp = gpu_only_import("cupy")
-np = cpu_only_import("numpy")
 
 
 @pytest.mark.parametrize("handle", [True, False])
@@ -131,7 +118,6 @@ def test_init_explainer_base_init_abritrary_model(
 
 
 def test_init_explainer_base_wrong_dtype():
-
     with pytest.raises(ValueError):
         explainer = SHAPBase(
             model=dummy_func, background=np.ones(10), dtype=np.int32

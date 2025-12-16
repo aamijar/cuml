@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2018-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -19,6 +8,7 @@
 #include "runner.cuh"
 
 #include <cuml/cluster/dbscan.hpp>
+#include <cuml/common/distance_type.hpp>
 #include <cuml/common/logger.hpp>
 
 #include <raft/core/nvtx.hpp>
@@ -33,6 +23,7 @@ template <typename Index_ = int>
 size_t compute_batch_size(size_t& estimated_memory,
                           Index_ n_rows,
                           Index_ n_owned_rows,
+                          EpsNnMethod eps_nn_method,
                           size_t max_mbytes_per_batch = 0,
                           Index_ neigh_per_row        = 0)
 {
@@ -66,30 +57,31 @@ size_t compute_batch_size(size_t& estimated_memory,
   // Limit batch size to number of owned rows
   batch_size = std::min((size_t)n_owned_rows, batch_size);
 
-  // To avoid overflow, we need: batch_size <= MAX_LABEL / n_rows (floor div)
-  Index_ MAX_LABEL = std::numeric_limits<Index_>::max();
-  if (batch_size > static_cast<std::size_t>(MAX_LABEL / n_rows)) {
-    Index_ new_batch_size = MAX_LABEL / n_rows;
-    CUML_LOG_WARN(
-      "Batch size limited by the chosen integer type (%d bytes). %d -> %d. "
-      "Using the larger integer type might result in better performance",
-      (int)sizeof(Index_),
-      (int)batch_size,
-      (int)new_batch_size);
-    batch_size = new_batch_size;
-  }
+  if (eps_nn_method != EpsNnMethod::RBC) {
+    // To avoid overflow, we need: batch_size <= MAX_LABEL / n_rows (floor div)
+    Index_ MAX_LABEL = std::numeric_limits<Index_>::max();
+    if (batch_size > static_cast<std::size_t>(MAX_LABEL / n_rows)) {
+      Index_ new_batch_size = MAX_LABEL / n_rows;
+      CUML_LOG_INFO(
+        "Batch size limited by the chosen integer type (%d bytes). %d -> %d. "
+        "Using the larger integer type might result in better performance",
+        (int)sizeof(Index_),
+        (int)batch_size,
+        (int)new_batch_size);
+      batch_size = new_batch_size;
+    }
 
-  // Warn when a smaller index type could be used
-  if ((sizeof(Index_) > sizeof(int)) &&
-      (batch_size < std::numeric_limits<int>::max() / static_cast<std::size_t>(n_rows))) {
-    CUML_LOG_WARN(
-      "You are using an index type of size (%d bytes) but a smaller index "
-      "type (%d bytes) would be sufficient. Using the smaller integer type "
-      "might result in better performance.",
-      (int)sizeof(Index_),
-      (int)sizeof(int));
+    // Notify when a smaller index type could be used
+    if ((sizeof(Index_) > sizeof(int)) &&
+        (batch_size < std::numeric_limits<int>::max() / static_cast<std::size_t>(n_rows))) {
+      CUML_LOG_INFO(
+        "You are using an index type of size (%d bytes) but a smaller index "
+        "type (%d bytes) would be sufficient. Using the smaller integer type "
+        "might result in better performance.",
+        (int)sizeof(Index_),
+        (int)sizeof(int));
+    }
   }
-
   estimated_memory = batch_size * est_mem_per_row + est_mem_fixed;
   return batch_size;
 }
@@ -101,20 +93,20 @@ void dbscanFitImpl(const raft::handle_t& handle,
                    Index_ n_cols,
                    T eps,
                    Index_ min_pts,
-                   raft::distance::DistanceType metric,
+                   ML::distance::DistanceType metric,
                    Index_* labels,
                    Index_* core_sample_indices,
                    T* sample_weight,
                    size_t max_mbytes_per_batch,
                    EpsNnMethod eps_nn_method,
                    cudaStream_t stream,
-                   int verbosity)
+                   rapids_logger::level_enum verbosity)
 {
   raft::common::nvtx::range fun_scope("ML::Dbscan::Fit");
-  ML::Logger::get().setLevel(verbosity);
+  ML::default_logger().set_level(verbosity);
   // XXX: for algo_vd and algo_adj, 0 (naive) is no longer an option and has
   // been removed.
-  int algo_vd  = (metric == raft::distance::Precomputed) ? 2 : 1;
+  int algo_vd  = (metric == ML::distance::DistanceType::Precomputed) ? 2 : 1;
   int algo_adj = 1;
   int algo_ccl = 2;
 
@@ -147,7 +139,7 @@ void dbscanFitImpl(const raft::handle_t& handle,
     RAFT_CUDA_TRY(cudaMemGetInfo(&free_memory, &total_memory));
 
     // X can either be a feature matrix or distance matrix
-    size_t dataset_memory = (metric == raft::distance::Precomputed)
+    size_t dataset_memory = (metric == ML::distance::DistanceType::Precomputed)
                               ? ((size_t)n_rows * (size_t)n_rows * sizeof(T))
                               : ((size_t)n_rows * (size_t)n_cols * sizeof(T));
 
@@ -162,8 +154,8 @@ void dbscanFitImpl(const raft::handle_t& handle,
   }
 
   size_t estimated_memory;
-  size_t batch_size =
-    compute_batch_size<Index_>(estimated_memory, n_rows, n_owned_rows, max_mbytes_per_batch);
+  size_t batch_size = compute_batch_size<Index_>(
+    estimated_memory, n_rows, n_owned_rows, eps_nn_method, max_mbytes_per_batch);
 
   CUML_LOG_DEBUG("Running batched training (batch size: %ld, estimated: %lf MB)",
                  (unsigned long)batch_size,

@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -20,13 +9,9 @@
 #include "svm_parameter.h"
 
 #include <cuml/common/logger.hpp>
+#include <cuml/matrix/kernel_params.hpp>
 
 #include <raft/core/handle.hpp>
-#include <raft/distance/distance_types.hpp>
-
-// namespace raft {
-// class handle_t;
-// }
 
 namespace ML {
 namespace SVM {
@@ -51,17 +36,18 @@ namespace SVM {
  * @param [in] kernel_params parameters for the kernel function
  * @param [out] model parameters of the trained model
  * @param [in] sample_weight optional sample weights, size [n_rows]
+ * @return n_iter: the number of solver iterations run during fitting
  */
 template <typename math_t>
-void svcFit(const raft::handle_t& handle,
-            math_t* input,
-            int n_rows,
-            int n_cols,
-            math_t* labels,
-            const SvmParameter& param,
-            raft::distance::kernels::KernelParams& kernel_params,
-            SvmModel<math_t>& model,
-            const math_t* sample_weight);
+int svcFit(const raft::handle_t& handle,
+           math_t* input,
+           int n_rows,
+           int n_cols,
+           math_t* labels,
+           const SvmParameter& param,
+           ML::matrix::KernelParams& kernel_params,
+           SvmModel<math_t>& model,
+           const math_t* sample_weight);
 
 /**
  * @brief Fit a support vector classifier to the training data.
@@ -84,20 +70,21 @@ void svcFit(const raft::handle_t& handle,
  * @param [in] kernel_params parameters for the kernel function
  * @param [out] model parameters of the trained model
  * @param [in] sample_weight optional sample weights, size [n_rows]
+ * @return n_iter: the number of solver iterations run during fitting
  */
 template <typename math_t>
-void svcFitSparse(const raft::handle_t& handle,
-                  int* indptr,
-                  int* indices,
-                  math_t* data,
-                  int n_rows,
-                  int n_cols,
-                  int nnz,
-                  math_t* labels,
-                  const SvmParameter& param,
-                  raft::distance::kernels::KernelParams& kernel_params,
-                  SvmModel<math_t>& model,
-                  const math_t* sample_weight);
+int svcFitSparse(const raft::handle_t& handle,
+                 int* indptr,
+                 int* indices,
+                 math_t* data,
+                 int n_rows,
+                 int n_cols,
+                 int nnz,
+                 math_t* labels,
+                 const SvmParameter& param,
+                 ML::matrix::KernelParams& kernel_params,
+                 SvmModel<math_t>& model,
+                 const math_t* sample_weight);
 
 /**
  * @brief Predict classes or decision function value for samples in input.
@@ -133,7 +120,7 @@ void svcPredict(const raft::handle_t& handle,
                 math_t* input,
                 int n_rows,
                 int n_cols,
-                raft::distance::kernels::KernelParams& kernel_params,
+                ML::matrix::KernelParams& kernel_params,
                 const SvmModel<math_t>& model,
                 math_t* preds,
                 math_t buffer_size,
@@ -178,7 +165,7 @@ void svcPredictSparse(const raft::handle_t& handle,
                       int n_rows,
                       int n_cols,
                       int nnz,
-                      raft::distance::kernels::KernelParams& kernel_params,
+                      ML::matrix::KernelParams& kernel_params,
                       const SvmModel<math_t>& model,
                       math_t* preds,
                       math_t buffer_size,
@@ -217,7 +204,7 @@ class SVC {
  public:
   // Public members for easier access during testing from Python.
 
-  raft::distance::kernels::KernelParams kernel_params;
+  ML::matrix::KernelParams kernel_params;
   SvmParameter param;
   SvmModel<math_t> model;
   /**
@@ -234,12 +221,12 @@ class SVC {
   SVC(raft::handle_t& handle,
       math_t C   = 1,
       math_t tol = 1.0e-3,
-      raft::distance::kernels::KernelParams kernel_params =
-        raft::distance::kernels::KernelParams{raft::distance::kernels::LINEAR, 3, 1, 0},
-      math_t cache_size  = 200,
-      int max_iter       = -1,
-      int nochange_steps = 1000,
-      int verbosity      = CUML_LEVEL_INFO);
+      ML::matrix::KernelParams kernel_params =
+        ML::matrix::KernelParams{ML::matrix::KernelType::LINEAR, 3, 1, 0},
+      math_t cache_size                   = 200,
+      int max_iter                        = -1,
+      int nochange_steps                  = 1000,
+      rapids_logger::level_enum verbosity = rapids_logger::level_enum::info);
 
   ~SVC();
 

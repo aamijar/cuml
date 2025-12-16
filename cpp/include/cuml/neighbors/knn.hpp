@@ -1,24 +1,15 @@
 /*
- * Copyright (c) 2019-2023, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
 
-#include <raft/distance/distance_types.hpp>
-#include <raft/spatial/knn/ann_common.h>
-#include <raft/spatial/knn/ball_cover_types.hpp>
+#include <cuml/common/distance_type.hpp>
+
+#include <cstdint>
+#include <memory>
+#include <vector>
 
 namespace raft {
 class handle_t;
@@ -46,6 +37,8 @@ namespace ML {
  *            default
  * @param[in] metric_arg the value of `p` for Minkowski (l-p) distances. This
  *            is ignored if the metric_type is not Minkowski.
+ * @param[in] translations translation ids for indices when index rows represent
+ *        non-contiguous partitions
  */
 void brute_force_knn(const raft::handle_t& handle,
                      std::vector<float*>& input,
@@ -56,21 +49,66 @@ void brute_force_knn(const raft::handle_t& handle,
                      int64_t* res_I,
                      float* res_D,
                      int k,
-                     bool rowMajorIndex                  = false,
-                     bool rowMajorQuery                  = false,
-                     raft::distance::DistanceType metric = raft::distance::DistanceType::L2Expanded,
-                     float metric_arg                    = 2.0f);
+                     bool rowMajorIndex                 = false,
+                     bool rowMajorQuery                 = false,
+                     ML::distance::DistanceType metric  = ML::distance::DistanceType::L2Expanded,
+                     float metric_arg                   = 2.0f,
+                     std::vector<int64_t>* translations = nullptr);
 
 void rbc_build_index(const raft::handle_t& handle,
-                     raft::spatial::knn::BallCoverIndex<int64_t, float, uint32_t>& index);
+                     std::uintptr_t& rbc_index,
+                     float* X,
+                     int64_t n_rows,
+                     int64_t n_cols,
+                     ML::distance::DistanceType metric);
 
 void rbc_knn_query(const raft::handle_t& handle,
-                   raft::spatial::knn::BallCoverIndex<int64_t, float, uint32_t>& index,
+                   const std::uintptr_t& rbc_index,
                    uint32_t k,
                    const float* search_items,
                    uint32_t n_search_items,
+                   int64_t dim,
                    int64_t* out_inds,
                    float* out_dists);
+
+/**
+ * @brief Free the RBC index
+ *
+ * @param[in] rbc_index pointer to the index to free
+ */
+void rbc_free_index(std::uintptr_t rbc_index);
+
+struct knnIndexImpl;
+
+struct knnIndex {
+  knnIndex();
+  ~knnIndex();
+
+  ML::distance::DistanceType metric;
+  float metricArg;
+  int nprobe;
+  int device;
+
+  std::unique_ptr<knnIndexImpl> pimpl;
+};
+
+struct knnIndexParam {
+  virtual ~knnIndexParam() {}
+};
+
+struct IVFParam : knnIndexParam {
+  int nlist;
+  int nprobe;
+};
+
+struct IVFFlatParam : IVFParam {};
+
+struct IVFPQParam : IVFParam {
+  int M;
+  int n_bits;
+  bool usePrecomputedTables;
+};
+
 /**
  * @brief Flat C++ API function to build an approximate nearest neighbors index
  * from an index array and a set of parameters.
@@ -85,9 +123,9 @@ void rbc_knn_query(const raft::handle_t& handle,
  * @param[in] D the dimensionality of the index array
  */
 void approx_knn_build_index(raft::handle_t& handle,
-                            raft::spatial::knn::knnIndex* index,
-                            raft::spatial::knn::knnIndexParam* params,
-                            raft::distance::DistanceType metric,
+                            knnIndex* index,
+                            knnIndexParam* params,
+                            ML::distance::DistanceType metric,
                             float metricArg,
                             float* index_array,
                             int n,
@@ -109,7 +147,7 @@ void approx_knn_build_index(raft::handle_t& handle,
 void approx_knn_search(raft::handle_t& handle,
                        float* distances,
                        int64_t* indices,
-                       raft::spatial::knn::knnIndex* index,
+                       knnIndex* index,
                        int k,
                        float* query_array,
                        int n);
@@ -127,6 +165,8 @@ void approx_knn_search(raft::handle_t& handle,
  * @param[in] n_index_rows number of vertices in index (eg. size of each y array)
  * @param[in] n_query_rows number of samples in knn_indices
  * @param[in] k number of nearest neighbors in knn_indices
+ * @param[in] sample_weight optional pre-computed weight array on device (size n_samples * k).
+ *            If nullptr, uniform weights are used.
  */
 void knn_classify(raft::handle_t& handle,
                   int* out,
@@ -134,7 +174,8 @@ void knn_classify(raft::handle_t& handle,
                   std::vector<int*>& y,
                   size_t n_index_rows,
                   size_t n_query_rows,
-                  int k);
+                  int k,
+                  float* sample_weight = nullptr);
 
 /**
  * @brief Flat C++ API function to perform a knn regression using
@@ -149,6 +190,8 @@ void knn_classify(raft::handle_t& handle,
  * @param[in] n_index_rows number of vertices in index (eg. size of each y array)
  * @param[in] n_query_rows number of samples in knn_indices and out
  * @param[in] k number of nearest neighbors in knn_indices
+ * @param[in] sample_weight optional pre-computed weight array on device (size n_samples * k).
+ *            If nullptr, uniform weights are used.
  */
 void knn_regress(raft::handle_t& handle,
                  float* out,
@@ -156,7 +199,8 @@ void knn_regress(raft::handle_t& handle,
                  std::vector<float*>& y,
                  size_t n_index_rows,
                  size_t n_query_rows,
-                 int k);
+                 int k,
+                 float* sample_weight = nullptr);
 
 /**
  * @brief Flat C++ API function to compute knn class probabilities
@@ -171,6 +215,8 @@ void knn_regress(raft::handle_t& handle,
  * @param[in] n_index_rows number of labels in y
  * @param[in] n_query_rows number of rows in knn_indices and out
  * @param[in] k number of nearest neighbors in knn_indices
+ * @param[in] sample_weight optional pre-computed weight array on device (size n_samples * k).
+ *            If nullptr, uniform weights are used.
  */
 void knn_class_proba(raft::handle_t& handle,
                      std::vector<float*>& out,
@@ -178,5 +224,6 @@ void knn_class_proba(raft::handle_t& handle,
                      std::vector<int*>& y,
                      size_t n_index_rows,
                      size_t n_query_rows,
-                     int k);
+                     int k,
+                     float* sample_weight = nullptr);
 };  // namespace ML

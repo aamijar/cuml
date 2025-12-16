@@ -1,49 +1,25 @@
 #=============================================================================
-# Copyright (c) 2021-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# cmake-format: off
+# SPDX-FileCopyrightText: Copyright (c) 2021-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
+# cmake-format: on
 #=============================================================================
 
 set(CUML_MIN_VERSION_raft "${CUML_VERSION_MAJOR}.${CUML_VERSION_MINOR}.00")
-set(CUML_BRANCH_VERSION_raft "${CUML_VERSION_MAJOR}.${CUML_VERSION_MINOR}")
 
 function(find_and_configure_raft)
-    set(oneValueArgs VERSION FORK PINNED_TAG EXCLUDE_FROM_ALL USE_RAFT_STATIC COMPILE_LIBRARY CLONE_ON_PIN NVTX)
+    set(oneValueArgs VERSION FORK PINNED_TAG EXCLUDE_FROM_ALL CLONE_ON_PIN NVTX)
     cmake_parse_arguments(PKG "${options}" "${oneValueArgs}"
             "${multiValueArgs}" ${ARGN} )
 
-    if(PKG_CLONE_ON_PIN AND NOT PKG_PINNED_TAG STREQUAL "branch-${CUML_BRANCH_VERSION_raft}")
+    if(PKG_CLONE_ON_PIN AND NOT PKG_PINNED_TAG STREQUAL "${rapids-cmake-checkout-tag}")
         message(STATUS "CUML: RAFT pinned tag found: ${PKG_PINNED_TAG}. Cloning raft locally.")
         set(CPM_DOWNLOAD_raft ON)
-    elseif(PKG_USE_RAFT_STATIC AND (NOT CPM_raft_SOURCE))
-        message(STATUS "CUML: Cloning raft locally to build static libraries.")
-        set(CPM_DOWNLOAD_raft ON)
     endif()
-
 
     # We need RAFT::distributed for MG tests
     if(BUILD_CUML_MG_TESTS)
         string(APPEND RAFT_COMPONENTS " distributed")
-    endif()
-
-    if(PKG_COMPILE_LIBRARY)
-      if(NOT PKG_USE_RAFT_STATIC)
-        string(APPEND RAFT_COMPONENTS " compiled")
-        set(RAFT_COMPILED_LIB raft::compiled PARENT_SCOPE)
-      else()
-        string(APPEND RAFT_COMPONENTS " compiled_static")
-        set(RAFT_COMPILED_LIB raft::compiled_static PARENT_SCOPE)
-      endif()
     endif()
 
     # We need to set this each time so that on subsequent calls to cmake
@@ -64,9 +40,7 @@ function(find_and_configure_raft)
         EXCLUDE_FROM_ALL       ${PKG_EXCLUDE_FROM_ALL}
         OPTIONS
           "BUILD_TESTS OFF"
-          "BUILD_BENCH OFF"
-          "BUILD_CAGRA_HNSWLIB OFF"
-          "RAFT_COMPILE_LIBRARY ${PKG_COMPILE_LIBRARY}"
+          "BUILD_PRIMS_BENCH OFF"
     )
 
     if(raft_ADDED)
@@ -83,13 +57,11 @@ endfunction()
 # CPM_raft_SOURCE=/path/to/local/raft
 find_and_configure_raft(VERSION          ${CUML_MIN_VERSION_raft}
       FORK             rapidsai
-      PINNED_TAG       branch-${CUML_BRANCH_VERSION_raft}
+      PINNED_TAG       ${rapids-cmake-checkout-tag}
       EXCLUDE_FROM_ALL ${CUML_EXCLUDE_RAFT_FROM_ALL}
       # When PINNED_TAG above doesn't match cuml,
       # force local raft clone in build directory
       # even if it's already installed.
       CLONE_ON_PIN     ${CUML_RAFT_CLONE_ON_PIN}
-      COMPILE_LIBRARY  ${CUML_RAFT_COMPILED}
-      USE_RAFT_STATIC  ${CUML_USE_RAFT_STATIC}
       NVTX             ${NVTX}
       )

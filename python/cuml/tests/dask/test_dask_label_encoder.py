@@ -1,28 +1,15 @@
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
+import cudf
+import cupy as cp
+import dask_cudf
+import numpy as np
 import pytest
 
 import cuml
 from cuml._thirdparty.sklearn.utils.validation import check_is_fitted
 from cuml.common.exceptions import NotFittedError
 from cuml.dask.preprocessing.LabelEncoder import LabelEncoder
-from cuml.internals.safe_imports import cpu_only_import, gpu_only_import
-
-cudf = gpu_only_import("cudf")
-np = cpu_only_import("numpy")
-dask_cudf = gpu_only_import("dask_cudf")
-cp = gpu_only_import("cupy")
 
 
 def _arr_to_similarity_mat(arr):

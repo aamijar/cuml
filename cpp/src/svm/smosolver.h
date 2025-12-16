@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -25,6 +14,9 @@
 #include <rmm/device_uvector.hpp>
 
 #include <thrust/device_ptr.h>
+
+#include <cuvs/distance/distance.hpp>
+#include <cuvs/distance/grammian.hpp>
 
 #include <cassert>
 #include <chrono>
@@ -68,8 +60,8 @@ class SmoSolver {
  public:
   SmoSolver(const raft::handle_t& handle,
             SvmParameter param,
-            raft::distance::kernels::KernelType kernel_type,
-            raft::distance::kernels::GramMatrixBase<math_t>* kernel)
+            cuvs::distance::kernels::KernelType kernel_type,
+            cuvs::distance::kernels::GramMatrixBase<math_t>* kernel)
     : handle(handle),
       C(param.C),
       tol(param.tol),
@@ -87,7 +79,7 @@ class SmoSolver {
       f(0, stream),
       y_label(0, stream)
   {
-    ML::Logger::get().setLevel(param.verbosity);
+    ML::default_logger().set_level(param.verbosity);
   }
 
   void GetNonzeroDeltaAlpha(const math_t* vec,
@@ -115,6 +107,7 @@ class SmoSolver {
    * @param [out] support_matrix support vectors in matrix format, size [n_support, n_cols]
    * @param [out] idx the original training set indices of the support vectors, size [n_support]
    * @param [out] b scalar constant for the decision function
+   * @param [in] max_iter: maximum number of total iterations (default -1 for no limit)
    * @param [in] max_outer_iter maximum number of outer iteration (default 100 * n_rows)
    * @param [in] max_inner_iter maximum number of inner iterations (default 10000)
    */
@@ -129,6 +122,7 @@ class SmoSolver {
              SupportStorage<math_t>* support_matrix,
              int** idx,
              math_t* b,
+             int max_iter       = -1,
              int max_outer_iter = -1,
              int max_inner_iter = 10000);
 
@@ -223,6 +217,8 @@ class SmoSolver {
    */
   void SvrInit(const math_t* yr, int n_rows, math_t* yc, math_t* f);
 
+  int GetNIter() { return n_iter; };
+
  private:
   const raft::handle_t& handle;
   cudaStream_t stream;
@@ -252,8 +248,8 @@ class SmoSolver {
   math_t tol;      //!< tolerance for stopping condition
   math_t epsilon;  //!< epsilon parameter for epsiolon-SVR
 
-  raft::distance::kernels::GramMatrixBase<math_t>* kernel;
-  raft::distance::kernels::KernelType kernel_type;
+  cuvs::distance::kernels::GramMatrixBase<math_t>* kernel;
+  cuvs::distance::kernels::KernelType kernel_type;
   float cache_size;  //!< size of kernel cache in MiB
 
   SvmType svmType;  ///!< Type of the SVM problem to solve
@@ -263,12 +259,13 @@ class SmoSolver {
   int n_small_diff;
   int nochange_steps;
   int n_increased_diff;
+  int n_outer_iter;
   int n_iter;
   bool report_increased_diff;
 
   bool CheckStoppingCondition(math_t diff)
   {
-    if (diff > diff_prev * 1.5 && n_iter > 0) {
+    if (diff > diff_prev * 1.5 && n_outer_iter > 0) {
       // Ideally, diff should decrease monotonically. In practice we can have
       // small fluctuations (10% increase is not uncommon). Here we consider a
       // 50% increase in the diff value large enough to indicate a problem.
@@ -277,7 +274,7 @@ class SmoSolver {
       // other cases.
       n_increased_diff++;
     }
-    if (report_increased_diff && n_iter > 100 && n_increased_diff > n_iter * 0.1) {
+    if (report_increased_diff && n_outer_iter > 100 && n_increased_diff > n_outer_iter * 0.1) {
       CUML_LOG_DEBUG(
         "Solver is not converging monotonically. This might be caused by "
         "insufficient normalization of the feature columns. In that case "

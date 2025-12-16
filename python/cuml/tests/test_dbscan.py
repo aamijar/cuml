@@ -1,38 +1,24 @@
-# Copyright (c) 2019-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import pairwise_distances
-from sklearn.datasets import make_blobs
+import numpy as np
+import pytest
 from sklearn.cluster import DBSCAN as skDBSCAN
+from sklearn.datasets import make_blobs
+from sklearn.metrics import pairwise_distances
+from sklearn.preprocessing import StandardScaler
+
+from cuml import DBSCAN as cuDBSCAN
+from cuml.testing.datasets import make_pattern
 from cuml.testing.utils import (
-    get_pattern,
-    unit_param,
-    quality_param,
-    stress_param,
     array_equal,
     assert_dbscan_equal,
+    get_handle,
+    quality_param,
+    stress_param,
+    unit_param,
 )
-from cuml import DBSCAN as cuDBSCAN
-from cuml.testing.utils import get_handle
-import pytest
-from cuml.internals.safe_imports import cpu_only_import_from
-from cuml.internals.safe_imports import cpu_only_import
-
-np = cpu_only_import("numpy")
-assert_raises = cpu_only_import_from("numpy.testing", "assert_raises")
 
 
 @pytest.mark.parametrize("max_mbytes_per_batch", [1e3, None])
@@ -65,9 +51,15 @@ def test_dbscan(
     out_dtype,
     algorithm,
 ):
-    if nrows == 500000 and pytest.max_gpu_memory < 32:
+    # Assume at least 4GB memory
+    max_gpu_memory = pytest.max_gpu_memory or 4
+
+    if algorithm == "rbc":
+        if datatype == np.float64 or out_dtype in ["int32", np.int32]:
+            pytest.skip("RBC does not support float64 dtype or int32 labels")
+    if nrows == 500000 and max_gpu_memory < 32:
         if pytest.adapt_stress_test:
-            nrows = nrows * pytest.max_gpu_memory // 32
+            nrows = nrows * max_gpu_memory // 32
         else:
             pytest.skip(
                 "Insufficient GPU memory for this test. "
@@ -82,6 +74,7 @@ def test_dbscan(
         n_features=n_feats,
         random_state=0,
     )
+    X = X.astype(datatype)
 
     handle, stream = get_handle(use_handle)
 
@@ -212,9 +205,12 @@ def test_dbscan_cosine(nrows, max_mbytes_per_batch, out_dtype):
 # Vary the eps to get a range of core point counts
 @pytest.mark.parametrize("eps", [0.05, 0.1, 0.5])
 def test_dbscan_sklearn_comparison(name, nrows, eps):
-    if nrows == 500000 and name == "blobs" and pytest.max_gpu_memory < 32:
+    # Assume at least 4GB memory
+    max_gpu_memory = pytest.max_gpu_memory or 4
+
+    if nrows == 500000 and name == "blobs" and max_gpu_memory < 32:
         if pytest.adapt_stress_test:
-            nrows = nrows * pytest.max_gpu_memory // 32
+            nrows = nrows * max_gpu_memory // 32
         else:
             pytest.skip(
                 "Insufficient GPU memory for this test."
@@ -230,7 +226,7 @@ def test_dbscan_sklearn_comparison(name, nrows, eps):
         "n_clusters": 2,
     }
     n_samples = nrows
-    pat = get_pattern(name, n_samples)
+    pat = make_pattern(name, n_samples)
     params = default_base.copy()
     params.update(pat[1])
     X, y = pat[0]
@@ -266,7 +262,7 @@ def test_dbscan_default(name):
         "n_clusters": 2,
     }
     n_samples = 500
-    pat = get_pattern(name, n_samples)
+    pat = make_pattern(name, n_samples)
     params = default_base.copy()
     params.update(pat[1])
     X, y = pat[0]
@@ -328,6 +324,7 @@ def test_core_point_prop1():
     assert array_equal(
         cuml_dbscan.core_sample_indices_, sk_dbscan.core_sample_indices_
     )
+    assert array_equal(cuml_dbscan.components_, sk_dbscan.components_)
 
     # Check the labels are correct
     assert_dbscan_equal(
@@ -375,6 +372,7 @@ def test_core_point_prop2():
     assert array_equal(
         cuml_dbscan.core_sample_indices_, sk_dbscan.core_sample_indices_
     )
+    assert array_equal(cuml_dbscan.components_, sk_dbscan.components_)
 
     # Check the labels are correct
     assert_dbscan_equal(
@@ -428,6 +426,7 @@ def test_core_point_prop3():
     assert array_equal(
         cuml_dbscan.core_sample_indices_, sk_dbscan.core_sample_indices_
     )
+    assert array_equal(cuml_dbscan.components_, sk_dbscan.components_)
 
     # Check the labels are correct
     assert_dbscan_equal(
@@ -447,6 +446,10 @@ def test_core_point_prop3():
 def test_dbscan_propagation(
     datatype, use_handle, out_dtype, algorithm, n_samples
 ):
+    if algorithm == "rbc":
+        if datatype == np.float64 or out_dtype in ["int32", np.int32]:
+            pytest.skip("RBC does not support float64 dtype or int32 labels")
+
     X, y = make_blobs(
         n_samples,
         centers=1,
@@ -482,10 +485,9 @@ def test_dbscan_propagation(
 
 
 def test_dbscan_no_calc_core_point_indices():
-
     params = {"eps": 1.1, "min_samples": 4}
     n_samples = 1000
-    pat = get_pattern("noisy_moons", n_samples)
+    pat = make_pattern("noisy_moons", n_samples)
 
     X, y = pat[0]
 
@@ -502,11 +504,12 @@ def test_dbscan_no_calc_core_point_indices():
 
     # Make sure we are None
     assert cuml_dbscan.core_sample_indices_ is None
+    assert cuml_dbscan.components_ is None
 
 
 def test_dbscan_on_empty_array():
-
     X = np.array([])
     cuml_dbscan = cuDBSCAN()
 
-    assert_raises(ValueError, cuml_dbscan.fit, X)
+    with pytest.raises(ValueError):
+        cuml_dbscan.fit(X)

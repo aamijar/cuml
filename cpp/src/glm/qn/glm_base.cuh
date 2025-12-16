@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2018-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -26,6 +15,7 @@
 #include <raft/util/cuda_utils.cuh>
 #include <raft/util/cudart_utils.hpp>
 
+#include <cuda/std/functional>
 #include <thrust/execution_policy.h>
 #include <thrust/functional.h>
 #include <thrust/reduce.h>
@@ -55,8 +45,8 @@ inline void linearFwd(const raft::handle_t& handle,
     // - Z <- b (broadcast): TODO reads Z unnecessarily atm
     // - Z <- W * X^T + Z    : TODO can be fused in CUTLASS?
     auto set_bias = [] __device__(const T z, const T b) { return b; };
-    raft::linalg::matrixVectorOp(
-      Z.data, Z.data, bias.data, Z.n, Z.m, false, false, set_bias, stream);
+    raft::linalg::matrixVectorOp<false, false>(
+      Z.data, Z.data, bias.data, Z.n, Z.m, set_bias, stream);
 
     Z.assign_gemm(handle, 1, weights, false, X, true, 1, stream);
   } else {
@@ -87,7 +77,7 @@ inline void linearBwd(const raft::handle_t& handle,
 
     // TODO can this be fused somehow?
     Gweights.assign_gemm(handle, 1.0 / X.m, dZ, false, X, false, beta, stream);
-    raft::stats::mean(Gbias.data, dZ.data, dZ.m, dZ.n, false, true, stream);
+    raft::stats::mean<true>(Gbias.data, dZ.data, dZ.m, dZ.n, false, stream);
   } else {
     G.assign_gemm(handle, 1.0 / X.m, dZ, false, X, false, beta, stream);
   }
@@ -124,7 +114,7 @@ struct GLMBase : GLMDims {
                                        sample_weights,
                                        sample_weights + n_samples,
                                        (T)0,
-                                       thrust::plus<T>());
+                                       cuda::std::plus<T>());
   }
 
   /*

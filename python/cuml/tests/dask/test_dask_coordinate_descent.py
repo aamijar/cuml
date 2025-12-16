@@ -1,29 +1,14 @@
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
+import numpy as np
 import pytest
 
 from cuml.dask.datasets import make_regression
-from cuml.dask.linear_model import ElasticNet
-from cuml.dask.linear_model import Lasso
+from cuml.dask.linear_model import ElasticNet, Lasso
 from cuml.metrics import r2_score
-from cuml.testing.utils import unit_param, quality_param, stress_param
-
-from cuml.internals.safe_imports import cpu_only_import
-
-np = cpu_only_import("numpy")
+from cuml.testing.utils import quality_param, stress_param, unit_param
 
 
 @pytest.mark.mg
@@ -62,7 +47,6 @@ def test_lasso(
     lasso = Lasso(
         alpha=np.array([alpha]),
         fit_intercept=True,
-        normalize=False,
         max_iter=1000,
         selection=algorithm,
         tol=1e-10,
@@ -93,7 +77,6 @@ def test_lasso(
     "n_parts", [unit_param(16), quality_param(32), stress_param(64)]
 )
 def test_lasso_default(dtype, nrows, column_info, n_parts, client):
-
     ncols, n_info = column_info
 
     X, y = make_regression(
@@ -148,7 +131,6 @@ def test_elastic_net(
     elasticnet = ElasticNet(
         alpha=np.array([alpha]),
         fit_intercept=True,
-        normalize=False,
         max_iter=1000,
         selection=algorithm,
         tol=1e-10,
@@ -201,3 +183,18 @@ def test_elastic_net_default(dtype, nrows, column_info, n_parts, client):
     y_hat = elasticnet.predict(X)
 
     assert r2_score(y.compute(), y_hat.compute()) >= 0.96
+
+
+@pytest.mark.parametrize("cls", [ElasticNet, Lasso])
+def test_max_iter_n_iter(cls, client):
+    X, y = make_regression(
+        n_samples=500,
+        n_features=20,
+        n_parts=10,
+        n_informative=10,
+        client=client,
+        dtype=np.float32,
+    )
+
+    model = cls(max_iter=2, client=client).fit(X, y)
+    assert model.solver.n_iter_ == 2

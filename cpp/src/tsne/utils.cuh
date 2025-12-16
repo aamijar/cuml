@@ -1,20 +1,10 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
+
 #include <cuml/common/logger.hpp>
 #include <cuml/common/utils.hpp>
 
@@ -26,6 +16,7 @@
 
 #include <rmm/exec_policy.hpp>
 
+#include <cuda/functional>
 #include <cuda_runtime.h>
 #include <thrust/device_ptr.h>
 #include <thrust/reduce.h>
@@ -82,20 +73,20 @@ double SymmetrizeTime = 0, DistancesTime = 0, NormalizeTime = 0, PerplexityTime 
 // To silence warnings
 
 #define START_TIMER                                                         \
-  if (ML::Logger::get().shouldLogFor(CUML_LEVEL_DEBUG)) {                   \
+  if (ML::default_logger().should_log(rapids_logger::level_enum::debug)) {  \
     gettimeofday(&timecheck, NULL);                                         \
     start = (long)timecheck.tv_sec * 1000 + (long)timecheck.tv_usec / 1000; \
   }
 
-#define END_TIMER(add_onto)                                               \
-  if (ML::Logger::get().shouldLogFor(CUML_LEVEL_DEBUG)) {                 \
-    gettimeofday(&timecheck, NULL);                                       \
-    end = (long)timecheck.tv_sec * 1000 + (long)timecheck.tv_usec / 1000; \
-    add_onto += (end - start);                                            \
+#define END_TIMER(add_onto)                                                \
+  if (ML::default_logger().should_log(rapids_logger::level_enum::debug)) { \
+    gettimeofday(&timecheck, NULL);                                        \
+    end = (long)timecheck.tv_sec * 1000 + (long)timecheck.tv_usec / 1000;  \
+    add_onto += (end - start);                                             \
   }
 
 #define PRINT_TIMES                                                                              \
-  if (ML::Logger::get().shouldLogFor(CUML_LEVEL_DEBUG)) {                                        \
+  if (ML::default_logger().should_log(rapids_logger::level_enum::debug)) {                       \
     double total = (SymmetrizeTime + DistancesTime + NormalizeTime + PerplexityTime +            \
                     BoundingBoxKernel_time + ClearKernel1_time + TreeBuildingKernel_time +       \
                     ClearKernel2_time + SummarizationKernel_time + SortKernel_time +             \
@@ -168,9 +159,9 @@ CUML_KERNEL void min_max_kernel(
   }
 
   value_t block_min, block_max;
-  if (find_min) { block_min = BlockReduce(temp_storage_min).Reduce(thread_min, cub::Min()); }
+  if (find_min) { block_min = BlockReduce(temp_storage_min).Reduce(thread_min, cuda::minimum{}); }
 
-  block_max = BlockReduce(temp_storage_max).Reduce(thread_max, cub::Max());
+  block_max = BlockReduce(temp_storage_max).Reduce(thread_max, cuda::maximum{});
 
   // results stored in first thread of block
 

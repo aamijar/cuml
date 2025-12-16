@@ -1,0 +1,60 @@
+#
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
+#
+
+
+import cudf.comm.serialize  # noqa: F401
+
+import cuml
+
+try:
+    from distributed.protocol import (
+        dask_deserialize,
+        dask_serialize,
+        register_generic,
+    )
+    from distributed.protocol.cuda import cuda_deserialize, cuda_serialize
+    from distributed.protocol.serialize import pickle_dumps, pickle_loads
+
+    from cuml.ensemble import RandomForestClassifier, RandomForestRegressor
+    from cuml.internals.array_sparse import SparseCumlArray
+    from cuml.naive_bayes import MultinomialNB
+
+    # Registering RF Regressor and Classifier to use pickling even when
+    # Base is serialized with Dask or CUDA serializations
+    @dask_serialize.register(RandomForestRegressor)
+    @cuda_serialize.register(RandomForestRegressor)
+    def rfr_serialize(rf):
+        return pickle_dumps(rf)
+
+    @dask_deserialize.register(RandomForestRegressor)
+    @cuda_deserialize.register(RandomForestRegressor)
+    def rfr_deserialize(header, frames):
+        return pickle_loads(header, frames)
+
+    @dask_serialize.register(RandomForestClassifier)
+    @cuda_serialize.register(RandomForestClassifier)
+    def rfc_serialize(rf):
+        return pickle_dumps(rf)
+
+    @dask_deserialize.register(RandomForestClassifier)
+    @cuda_deserialize.register(RandomForestClassifier)
+    def rfc_deserialize(header, frames):
+        return pickle_loads(header, frames)
+
+    register_generic(SparseCumlArray, "cuda", cuda_serialize, cuda_deserialize)
+
+    register_generic(SparseCumlArray, "dask", dask_serialize, dask_deserialize)
+
+    register_generic(cuml.Base, "cuda", cuda_serialize, cuda_deserialize)
+
+    register_generic(cuml.Base, "dask", dask_serialize, dask_deserialize)
+
+    register_generic(MultinomialNB, "cuda", cuda_serialize, cuda_deserialize)
+
+    register_generic(MultinomialNB, "dask", dask_serialize, dask_deserialize)
+
+except ImportError:
+    # distributed is probably not installed on the system
+    pass

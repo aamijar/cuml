@@ -1,29 +1,15 @@
-# Copyright (c) 2019-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-from sklearn.model_selection import train_test_split
-from cuml.datasets import make_regression
-from sklearn.linear_model import SGDRegressor
-from cuml.testing.utils import unit_param, quality_param, stress_param
-from cuml.metrics import r2_score
-from cuml.linear_model import MBSGDRegressor as cumlMBSGRegressor
-from cuml.internals.safe_imports import gpu_only_import
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
+import cupy as cp
+import numpy as np
 import pytest
-from cuml.internals.safe_imports import cpu_only_import
+from sklearn.linear_model import SGDRegressor
+from sklearn.model_selection import train_test_split
 
-np = cpu_only_import("numpy")
-cp = gpu_only_import("cupy")
+import cuml
+from cuml.datasets import make_regression
+from cuml.metrics import r2_score
+from cuml.testing.utils import quality_param, stress_param, unit_param
 
 
 @pytest.fixture(
@@ -47,13 +33,12 @@ cp = gpu_only_import("cupy")
 )
 def make_dataset(request):
     nrows, ncols, n_info, datatype = request.param
-    if (
-        nrows == 500000
-        and datatype == np.float64
-        and pytest.max_gpu_memory < 32
-    ):
+    # Assume at least 4GB memory
+    max_gpu_memory = pytest.max_gpu_memory or 4
+
+    if nrows == 500000 and datatype == np.float64 and max_gpu_memory < 32:
         if pytest.adapt_stress_test:
-            nrows = nrows * pytest.max_gpu_memory // 32
+            nrows = nrows * max_gpu_memory // 32
         else:
             pytest.skip(
                 "Insufficient GPU memory for this test."
@@ -87,8 +72,7 @@ def test_mbsgd_regressor_vs_skl(lrate, penalty, make_dataset):
     nrows, datatype, X_train, X_test, y_train, y_test = make_dataset
 
     if nrows < 500000:
-
-        cu_mbsgd_regressor = cumlMBSGRegressor(
+        cu_mbsgd_regressor = cuml.MBSGDRegressor(
             learning_rate=lrate,
             eta0=0.005,
             epochs=100,
@@ -100,9 +84,7 @@ def test_mbsgd_regressor_vs_skl(lrate, penalty, make_dataset):
 
         cu_mbsgd_regressor.fit(X_train, y_train)
         cu_pred = cu_mbsgd_regressor.predict(X_test)
-        cu_r2 = r2_score(
-            cp.asnumpy(cu_pred), cp.asnumpy(y_test), convert_dtype=datatype
-        )
+        cu_r2 = r2_score(cu_pred, y_test)
 
         skl_sgd_regressor = SGDRegressor(
             learning_rate=lrate,
@@ -116,7 +98,7 @@ def test_mbsgd_regressor_vs_skl(lrate, penalty, make_dataset):
 
         skl_sgd_regressor.fit(cp.asnumpy(X_train), cp.asnumpy(y_train).ravel())
         skl_pred = skl_sgd_regressor.predict(cp.asnumpy(X_test))
-        skl_r2 = r2_score(skl_pred, cp.asnumpy(y_test), convert_dtype=datatype)
+        skl_r2 = r2_score(skl_pred, y_test)
         assert abs(cu_r2 - skl_r2) <= 0.021
 
 
@@ -125,7 +107,7 @@ def test_mbsgd_regressor_vs_skl(lrate, penalty, make_dataset):
     # while still keeping good coverage of the different features of MBSGD
     ("lrate", "penalty"),
     [
-        ("constant", "none"),
+        ("constant", None),
         ("invscaling", "l1"),
         ("adaptive", "l2"),
         ("constant", "elasticnet"),
@@ -134,7 +116,7 @@ def test_mbsgd_regressor_vs_skl(lrate, penalty, make_dataset):
 def test_mbsgd_regressor(lrate, penalty, make_dataset):
     nrows, datatype, X_train, X_test, y_train, y_test = make_dataset
 
-    cu_mbsgd_regressor = cumlMBSGRegressor(
+    model = cuml.MBSGDRegressor(
         learning_rate=lrate,
         eta0=0.005,
         epochs=100,
@@ -143,10 +125,18 @@ def test_mbsgd_regressor(lrate, penalty, make_dataset):
         tol=0.0,
         penalty=penalty,
     )
+    # Fitted attributes don't exist before fit
+    assert not hasattr(model, "coef_")
+    assert not hasattr(model, "intercept_")
 
-    cu_mbsgd_regressor.fit(X_train, y_train)
-    cu_pred = cu_mbsgd_regressor.predict(X_test)
-    cu_r2 = r2_score(cu_pred, y_test, convert_dtype=datatype)
+    model.fit(X_train, y_train)
+
+    # Fitted attributes exist and have correct types after fit
+    assert isinstance(model.coef_, type(X_train))
+    assert isinstance(model.intercept_, float)
+
+    cu_pred = model.predict(X_test)
+    cu_r2 = r2_score(cu_pred, y_test)
 
     assert cu_r2 >= 0.88
 
@@ -154,32 +144,9 @@ def test_mbsgd_regressor(lrate, penalty, make_dataset):
 def test_mbsgd_regressor_default(make_dataset):
     nrows, datatype, X_train, X_test, y_train, y_test = make_dataset
 
-    cu_mbsgd_regressor = cumlMBSGRegressor(batch_size=nrows / 100)
+    cu_mbsgd_regressor = cuml.MBSGDRegressor(batch_size=nrows / 100)
     cu_mbsgd_regressor.fit(X_train, y_train)
     cu_pred = cu_mbsgd_regressor.predict(X_test)
-    cu_r2 = r2_score(
-        cp.asnumpy(cu_pred), cp.asnumpy(y_test), convert_dtype=datatype
-    )
+    cu_r2 = r2_score(cu_pred, y_test)
 
     assert cu_r2 > 0.9
-
-
-def test_mbsgd_regressor_set_params():
-    x = np.linspace(0, 1, 50)
-    y = x * 2
-
-    model = cumlMBSGRegressor()
-    model.fit(x, y)
-    coef_before = model.coef_
-
-    model = cumlMBSGRegressor(eta0=0.1, fit_intercept=False)
-    model.fit(x, y)
-    coef_after = model.coef_
-
-    model = cumlMBSGRegressor()
-    model.set_params(**{"eta0": 0.1, "fit_intercept": False})
-    model.fit(x, y)
-    coef_test = model.coef_
-
-    assert coef_before != coef_after
-    assert coef_after == coef_test

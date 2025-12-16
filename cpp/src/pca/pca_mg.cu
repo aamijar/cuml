@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "pca.cuh"
@@ -54,7 +43,8 @@ void fit_impl(raft::handle_t& handle,
               paramsPCAMG prms,
               cudaStream_t* streams,
               std::uint32_t n_streams,
-              bool verbose)
+              bool verbose,
+              bool flip_signs_based_on_U = false)
 {
   const auto& comm = handle.get_comms();
 
@@ -69,12 +59,38 @@ void fit_impl(raft::handle_t& handle,
   Stats::opg::cov(handle, cov, input_data, input_desc, mu_data, true, streams, n_streams);
 
   ML::truncCompExpVars<T, mg_solver>(
-    handle, cov.ptr, components, explained_var, explained_var_ratio, prms, streams[0]);
+    handle, cov.ptr, components, explained_var, explained_var_ratio, noise_vars, prms, streams[0]);
 
   T scalar = (prms.n_rows - 1);
   raft::matrix::seqRoot(explained_var, singular_vals, scalar, prms.n_components, streams[0], true);
 
   Stats::opg::mean_add(input_data, input_desc, mu_data, comm, streams, n_streams);
+
+  if (flip_signs_based_on_U) {
+    sign_flip_components_u(handle,
+                           input_data,
+                           input_desc,
+                           components,
+                           prms.n_rows,
+                           prms.n_cols,
+                           prms.n_components,
+                           streams,
+                           n_streams,
+                           true);
+  } else {
+    for (std::uint32_t i = 0; i < n_streams; i++) {
+      handle.sync_stream(streams[i]);
+    }
+    signFlipComponents(handle,
+                       input_data[0]->ptr,
+                       components,
+                       prms.n_rows,
+                       prms.n_cols,
+                       prms.n_components,
+                       streams[0],
+                       true,
+                       false);
+  }
 }
 
 /**
@@ -102,7 +118,8 @@ void fit_impl(raft::handle_t& handle,
               T* mu,
               T* noise_vars,
               paramsPCAMG prms,
-              bool verbose)
+              bool verbose,
+              bool flip_signs_based_on_U = false)
 {
   int rank = handle.get_comms().get_rank();
 
@@ -127,10 +144,8 @@ void fit_impl(raft::handle_t& handle,
              prms,
              streams,
              n_streams,
-             verbose);
-    for (std::uint32_t i = 0; i < n_streams; i++) {
-      handle.sync_stream(streams[i]);
-    }
+             verbose,
+             flip_signs_based_on_U);
   } else if (prms.algorithm == mg_solver::QR) {
     const raft::handle_t& h = handle;
     cudaStream_t stream     = h.get_stream();
@@ -167,7 +182,31 @@ void fit_impl(raft::handle_t& handle,
                        rank);
 
     // sign flip
-    sign_flip(handle, uMatrixParts, input_desc, vMatrix.data(), prms.n_cols, streams, n_streams);
+    if (flip_signs_based_on_U) {
+      sign_flip_components_u(handle,
+                             input_data,
+                             input_desc,
+                             vMatrix.data(),
+                             prms.n_rows,
+                             prms.n_cols,
+                             prms.n_cols,
+                             streams,
+                             n_streams,
+                             true);
+    } else {
+      for (std::uint32_t i = 0; i < n_streams; i++) {
+        handle.sync_stream(streams[i]);
+      }
+      signFlipComponents(h,
+                         input_data[0]->ptr,
+                         vMatrix.data(),
+                         prms.n_rows,
+                         prms.n_cols,
+                         prms.n_cols,
+                         stream,
+                         true,
+                         false);
+    }
 
     // Calculate instance variables
     rmm::device_uvector<T> explained_var_all(prms.n_cols, stream);
@@ -193,6 +232,19 @@ void fit_impl(raft::handle_t& handle,
                                   prms.n_components,
                                   std::size_t(1),
                                   stream);
+
+    // Compute the scalar noise_vars defined as (pseudocode)
+    // (n_components < min(n_cols, n_rows)) ? explained_var_all[n_components:].mean() : 0
+    if (prms.n_components < prms.n_cols && prms.n_components < prms.n_rows) {
+      raft::stats::mean<true>(noise_vars,
+                              explained_var_all.data() + prms.n_components,
+                              std::size_t{1},
+                              prms.n_cols - prms.n_components,
+                              false,
+                              stream);
+    } else {
+      raft::matrix::setValue(noise_vars, noise_vars, T{0}, 1, stream);
+    }
 
     raft::linalg::transpose(vMatrix.data(), prms.n_cols, stream);
     raft::matrix::truncZeroOrigin(
@@ -232,21 +284,15 @@ void transform_impl(raft::handle_t& handle,
     T scalar = T(sqrt(prms.n_rows - 1));
     raft::linalg::scalarMultiply(
       components, components, scalar, prms.n_cols * prms.n_components, streams[0]);
-    raft::matrix::matrixVectorBinaryDivSkipZero(
-      components, singular_vals, prms.n_cols, prms.n_components, true, true, streams[0]);
+    raft::matrix::matrixVectorBinaryDivSkipZero<true, true>(
+      components, singular_vals, prms.n_cols, prms.n_components, streams[0]);
   }
 
   for (std::size_t i = 0; i < input.size(); i++) {
     auto si = i % n_streams;
 
-    raft::stats::meanCenter(input[i]->ptr,
-                            input[i]->ptr,
-                            mu,
-                            prms.n_cols,
-                            local_blocks[i]->size,
-                            false,
-                            true,
-                            streams[si]);
+    raft::stats::meanCenter<false, true>(
+      input[i]->ptr, input[i]->ptr, mu, prms.n_cols, local_blocks[i]->size, streams[si]);
 
     T alpha = T(1);
     T beta  = T(0);
@@ -264,19 +310,13 @@ void transform_impl(raft::handle_t& handle,
                        beta,
                        streams[si]);
 
-    raft::stats::meanAdd(input[i]->ptr,
-                         input[i]->ptr,
-                         mu,
-                         prms.n_cols,
-                         local_blocks[i]->size,
-                         false,
-                         true,
-                         streams[si]);
+    raft::stats::meanAdd<false, true>(
+      input[i]->ptr, input[i]->ptr, mu, prms.n_cols, local_blocks[i]->size, streams[si]);
   }
 
   if (prms.whiten) {
-    raft::matrix::matrixVectorBinaryMultSkipZero(
-      components, singular_vals, prms.n_cols, prms.n_components, true, true, streams[0]);
+    raft::matrix::matrixVectorBinaryMultSkipZero<true, true>(
+      components, singular_vals, prms.n_cols, prms.n_components, streams[0]);
     T scalar = T(1 / sqrt(prms.n_rows - 1));
     raft::linalg::scalarMultiply(
       components, components, scalar, prms.n_cols * prms.n_components, streams[0]);
@@ -369,8 +409,8 @@ void inverse_transform_impl(raft::handle_t& handle,
     T scalar = T(1 / sqrt(prms.n_rows - 1));
     raft::linalg::scalarMultiply(
       components, components, scalar, prms.n_rows * prms.n_components, streams[0]);
-    raft::matrix::matrixVectorBinaryMultSkipZero(
-      components, singular_vals, prms.n_rows, prms.n_components, true, true, streams[0]);
+    raft::matrix::matrixVectorBinaryMultSkipZero<true, true>(
+      components, singular_vals, prms.n_rows, prms.n_components, streams[0]);
   }
 
   for (std::size_t i = 0; i < local_blocks.size(); i++) {
@@ -392,19 +432,13 @@ void inverse_transform_impl(raft::handle_t& handle,
                        beta,
                        streams[si]);
 
-    raft::stats::meanAdd(input[i]->ptr,
-                         input[i]->ptr,
-                         mu,
-                         prms.n_cols,
-                         local_blocks[i]->size,
-                         false,
-                         true,
-                         streams[si]);
+    raft::stats::meanAdd<false, true>(
+      input[i]->ptr, input[i]->ptr, mu, prms.n_cols, local_blocks[i]->size, streams[si]);
   }
 
   if (prms.whiten) {
-    raft::matrix::matrixVectorBinaryDivSkipZero(
-      components, singular_vals, prms.n_rows, prms.n_components, true, true, streams[0]);
+    raft::matrix::matrixVectorBinaryDivSkipZero<true, true>(
+      components, singular_vals, prms.n_rows, prms.n_components, streams[0]);
     T scalar = T(sqrt(prms.n_rows - 1));
     raft::linalg::scalarMultiply(
       components, components, scalar, prms.n_rows * prms.n_components, streams[0]);
@@ -505,7 +539,8 @@ void fit_transform_impl(raft::handle_t& handle,
                         T* mu,
                         T* noise_vars,
                         paramsPCAMG prms,
-                        bool verbose)
+                        bool verbose,
+                        bool flip_signs_based_on_U = false)
 {
   int rank = handle.get_comms().get_rank();
 
@@ -533,7 +568,8 @@ void fit_transform_impl(raft::handle_t& handle,
            prms,
            streams,
            n_streams,
-           verbose);
+           verbose,
+           flip_signs_based_on_U);
 
   transform_impl(handle,
                  input_data,
@@ -546,8 +582,6 @@ void fit_transform_impl(raft::handle_t& handle,
                  streams,
                  n_streams,
                  verbose);
-
-  sign_flip(handle, trans_data, input_desc, components, prms.n_components, streams, n_streams);
 
   for (std::uint32_t i = 0; i < n_streams; i++) {
     handle.sync_stream(streams[i]);
@@ -568,7 +602,8 @@ void fit(raft::handle_t& handle,
          float* mu,
          float* noise_vars,
          paramsPCAMG prms,
-         bool verbose)
+         bool verbose,
+         bool flip_signs_based_on_U)
 {
   fit_impl(handle,
            input_data,
@@ -580,7 +615,8 @@ void fit(raft::handle_t& handle,
            mu,
            noise_vars,
            prms,
-           verbose);
+           verbose,
+           flip_signs_based_on_U);
 }
 
 void fit(raft::handle_t& handle,
@@ -593,7 +629,8 @@ void fit(raft::handle_t& handle,
          double* mu,
          double* noise_vars,
          paramsPCAMG prms,
-         bool verbose)
+         bool verbose,
+         bool flip_signs_based_on_U)
 {
   fit_impl(handle,
            input_data,
@@ -605,7 +642,8 @@ void fit(raft::handle_t& handle,
            mu,
            noise_vars,
            prms,
-           verbose);
+           verbose,
+           flip_signs_based_on_U);
 }
 
 void fit_transform(raft::handle_t& handle,
@@ -620,7 +658,8 @@ void fit_transform(raft::handle_t& handle,
                    float* mu,
                    float* noise_vars,
                    paramsPCAMG prms,
-                   bool verbose)
+                   bool verbose,
+                   bool flip_signs_based_on_U = false)
 {
   fit_transform_impl(handle,
                      rank_sizes,
@@ -634,7 +673,8 @@ void fit_transform(raft::handle_t& handle,
                      mu,
                      noise_vars,
                      prms,
-                     verbose);
+                     verbose,
+                     flip_signs_based_on_U);
 }
 
 void fit_transform(raft::handle_t& handle,
@@ -649,7 +689,8 @@ void fit_transform(raft::handle_t& handle,
                    double* mu,
                    double* noise_vars,
                    paramsPCAMG prms,
-                   bool verbose)
+                   bool verbose,
+                   bool flip_signs_based_on_U = false)
 {
   fit_transform_impl(handle,
                      rank_sizes,
@@ -663,7 +704,8 @@ void fit_transform(raft::handle_t& handle,
                      mu,
                      noise_vars,
                      prms,
-                     verbose);
+                     verbose,
+                     flip_signs_based_on_U);
 }
 
 void transform(raft::handle_t& handle,

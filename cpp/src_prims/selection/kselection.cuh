@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2018-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -333,7 +322,7 @@ CUML_KERNEL void warpTopKkernel(
       if (outV != nullptr && col < k) outV[rowId * k + col] = topk.arr[i].val;
       if (outK != nullptr && col < k) outK[rowId * k + col] = topk.arr[i].key;
     }  // end for outV and outK
-  }    // end for Sort = false
+  }  // end for Sort = false
   else {
   }
 }

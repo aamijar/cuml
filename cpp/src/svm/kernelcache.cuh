@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -22,9 +11,10 @@
 #include <cuml/svm/svm_parameter.h>
 
 #include <raft/core/handle.hpp>
-#include <raft/distance/kernels.cuh>
 #include <raft/linalg/gemm.cuh>
 #include <raft/linalg/init.cuh>
+#include <raft/linalg/norm.cuh>
+#include <raft/linalg/unary_op.cuh>
 #include <raft/util/cache.cuh>
 #include <raft/util/cache_util.cuh>
 #include <raft/util/cuda_utils.cuh>
@@ -38,6 +28,9 @@
 #include <thrust/execution_policy.h>
 #include <thrust/iterator/constant_iterator.h>
 #include <thrust/reverse.h>
+
+#include <cuvs/distance/distance.hpp>
+#include <cuvs/distance/grammian.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -81,7 +74,7 @@ CUML_KERNEL void mapColumnIndicesToSVRSpace(
 }
 
 template <typename math_t>
-struct select_at_index : public thrust::unary_function<int, math_t> {
+struct select_at_index {
   const math_t* dot_;
   select_at_index(const math_t* dot) : dot_(dot) {}
 
@@ -335,8 +328,8 @@ class KernelCache {
               int n_rows,
               int n_cols,
               int n_ws,
-              raft::distance::kernels::GramMatrixBase<math_t>* kernel,
-              raft::distance::kernels::KernelType kernel_type,
+              cuvs::distance::kernels::GramMatrixBase<math_t>* kernel,
+              cuvs::distance::kernels::KernelType kernel_type,
               float cache_size                = 200,
               SvmType svmType                 = C_SVC,
               size_t kernel_tile_byte_limit   = 1 << 30,
@@ -394,7 +387,7 @@ class KernelCache {
     }
 
     // store matrix l2 norm for RBF kernels
-    if (kernel_type == raft::distance::kernels::KernelType::RBF) {
+    if (kernel_type == cuvs::distance::kernels::KernelType::RBF) {
       matrix_l2.resize(n_rows, stream);
       matrix_l2_ws.resize(n_ws, stream);
       ML::SVM::matrixRowNorm(handle, matrix, matrix_l2.data(), raft::linalg::NormType::L2Norm);
@@ -408,7 +401,7 @@ class KernelCache {
       copyIndptrToHost(matrix, host_indptr.data(), stream);
     }
   }
-  ~KernelCache(){};
+  ~KernelCache() {};
 
   /**
    * Helper object to pass batch information of cache while iterating batches
@@ -515,7 +508,7 @@ class KernelCache {
     }
 
     // extract dot array for RBF
-    if (kernel_type == raft::distance::kernels::KernelType::RBF) {
+    if (kernel_type == cuvs::distance::kernels::KernelType::RBF) {
       selectValueSubset(matrix_l2_ws.data(), matrix_l2.data(), ws_idx_mod.data(), n_ws);
     }
 
@@ -577,7 +570,7 @@ class KernelCache {
           matrix, x_ws_dense.data(), nz_da_idx + n_cached, n_uncached, handle);
       }
       // extract dot array for RBF
-      if (kernel_type == raft::distance::kernels::KernelType::RBF) {
+      if (kernel_type == cuvs::distance::kernels::KernelType::RBF) {
         selectValueSubset(matrix_l2_ws.data(), matrix_l2.data(), nz_da_idx + n_cached, n_uncached);
       }
     }
@@ -762,8 +755,8 @@ class KernelCache {
   std::vector<int> host_indptr;
   rmm::device_uvector<int> indptr_batched;
 
-  raft::distance::kernels::GramMatrixBase<math_t>* kernel;
-  raft::distance::kernels::KernelType kernel_type;
+  cuvs::distance::kernels::GramMatrixBase<math_t>* kernel;
+  cuvs::distance::kernels::KernelType kernel_type;
 
   int n_rows;  //!< number of rows in x
   int n_cols;  //!< number of columns in x

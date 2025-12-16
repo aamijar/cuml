@@ -1,26 +1,18 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "benchmark.cuh"
 
 #include <cuml/cluster/kmeans.hpp>
+#include <cuml/cluster/kmeans_params.hpp>
+#include <cuml/common/distance_type.hpp>
 #include <cuml/common/logger.hpp>
 
-#include <raft/distance/distance_types.hpp>
 #include <raft/random/rng_state.hpp>
+
+#include <rapids_logger/logger.hpp>
 
 #include <utility>
 
@@ -48,16 +40,25 @@ class KMeans : public BlobsFixture<D> {
     using MLCommon::Bench::CudaEventTimer;
     if (!this->params.rowMajor) { state.SkipWithError("KMeans only supports row-major inputs"); }
     this->loopOnState(state, [this]() {
-      ML::kmeans::fit_predict(*this->handle,
-                              kParams,
-                              this->data.X.data(),
-                              this->params.nrows,
-                              this->params.ncols,
-                              nullptr,
-                              centroids,
-                              this->data.y.data(),
-                              inertia,
-                              nIter);
+      ML::kmeans::fit(*this->handle,
+                      kParams,
+                      this->data.X.data(),
+                      this->params.nrows,
+                      this->params.ncols,
+                      nullptr,
+                      centroids,
+                      inertia,
+                      nIter);
+      ML::kmeans::predict(*this->handle,
+                          kParams,
+                          centroids,
+                          this->data.X.data(),
+                          this->params.nrows,
+                          this->params.ncols,
+                          nullptr,
+                          true,
+                          this->data.y.data(),
+                          inertia);
     });
   }
 
@@ -91,8 +92,8 @@ std::vector<Params> getInputs()
   p.kmeans.init                            = ML::kmeans::KMeansParams::InitMethod(0);
   p.kmeans.max_iter                        = 300;
   p.kmeans.tol                             = 1e-4;
-  p.kmeans.verbosity                       = RAFT_LEVEL_INFO;
-  p.kmeans.metric                          = raft::distance::DistanceType::L2Expanded;
+  p.kmeans.verbosity                       = rapids_logger::level_enum::info;
+  p.kmeans.metric                          = ML::distance::DistanceType::L2Expanded;
   p.kmeans.rng_state                       = raft::random::RngState(p.blobs.seed);
   p.kmeans.inertia_check                   = true;
   std::vector<std::pair<int, int>> rowcols = {

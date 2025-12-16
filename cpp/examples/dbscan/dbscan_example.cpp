@@ -1,19 +1,9 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #include <cuml/cluster/dbscan.hpp>
+#include <cuml/common/distance_type.hpp>
 
 #include <raft/core/handle.hpp>
 
@@ -203,13 +193,13 @@ int main(int argc, char* argv[])
                   nCols,
                   eps,
                   minPts,
-                  raft::distance::L2SqrtUnexpanded,
+                  ML::distance::DistanceType::L2SqrtUnexpanded,
                   d_labels,
                   nullptr,
                   nullptr,
                   max_bytes_per_batch,
                   ML::Dbscan::EpsNnMethod::BRUTE_FORCE,
-                  false);
+                  rapids_logger::level_enum::off);
   CUDA_RT_CALL(cudaMemcpyAsync(
     h_labels.data(), d_labels, nRows * sizeof(int), cudaMemcpyDeviceToHost, stream));
   CUDA_RT_CALL(cudaStreamSynchronize(stream));

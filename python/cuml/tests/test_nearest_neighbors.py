@@ -1,57 +1,37 @@
 #
-# Copyright (c) 2019-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
 import gc
-from cuml.common import has_scipy
-import cuml
-import sklearn
-from cuml.internals.safe_imports import cpu_only_import_from
-from numpy.testing import assert_array_equal, assert_allclose
-from cuml.internals.safe_imports import cpu_only_import
-import pytest
 import math
 
+import cudf
+import cupy as cp
+import cupyx
+import numpy as np
+import pandas as pd
+import pytest
+import sklearn
+from numpy.testing import assert_allclose, assert_array_equal
+from scipy.sparse import isspmatrix_csr
+from sklearn.metrics import pairwise_distances
+from sklearn.neighbors import NearestNeighbors as skKNN
+
+import cuml
+from cuml.datasets import make_blobs
+from cuml.internals import logger  # noqa: F401
+from cuml.metrics import pairwise_distances as cuPW
+from cuml.neighbors import NearestNeighbors as cuKNN
 from cuml.testing.utils import (
     array_equal,
-    unit_param,
     quality_param,
     stress_param,
+    unit_param,
 )
-from cuml.neighbors import NearestNeighbors as cuKNN
-
-from sklearn.neighbors import NearestNeighbors as skKNN
-from cuml.datasets import make_blobs
-
-from sklearn.metrics import pairwise_distances
-from cuml.metrics import pairwise_distances as cuPW
-
-from cuml.internals import logger
-
-from cuml.internals.safe_imports import gpu_only_import
-
-cp = gpu_only_import("cupy")
-cupyx = gpu_only_import("cupyx")
-cudf = gpu_only_import("cudf")
-pd = cpu_only_import("pandas")
-np = cpu_only_import("numpy")
-isspmatrix_csr = cpu_only_import_from("scipy.sparse", "isspmatrix_csr")
-
 
 pytestmark = pytest.mark.filterwarnings(
-    "ignore:((.|\n)*)#4020((.|\n)*):" "UserWarning:cuml[.*]"
+    "ignore:((.|\n)*)#4020((.|\n)*):UserWarning:cuml[.*]"
 )
 
 
@@ -107,10 +87,6 @@ def metric_p_combinations():
 @pytest.mark.parametrize("datatype", ["dataframe", "numpy"])
 @pytest.mark.parametrize("metric_p", metric_p_combinations())
 @pytest.mark.parametrize("nrows", [1000, stress_param(10000)])
-@pytest.mark.skipif(
-    not has_scipy(),
-    reason="Skipping test_self_neighboring" " because Scipy is missing",
-)
 def test_self_neighboring(datatype, metric_p, nrows):
     """Test that searches using an indexed vector itself return sensible
     results for that vector
@@ -124,11 +100,6 @@ def test_self_neighboring(datatype, metric_p, nrows):
     n_neighbors = 3
 
     metric, p = metric_p
-
-    if not has_scipy():
-        pytest.skip(
-            "Skipping test_self_neighboring because " + "Scipy is missing"
-        )
 
     X, y = make_blobs(
         n_samples=nrows, centers=n_clusters, n_features=ncols, random_state=0
@@ -186,12 +157,6 @@ def test_self_neighboring(datatype, metric_p, nrows):
 def test_neighborhood_predictions(
     nrows, ncols, n_neighbors, n_clusters, datatype, algo
 ):
-    if not has_scipy():
-        pytest.skip(
-            "Skipping test_neighborhood_predictions because "
-            + "Scipy is missing"
-        )
-
     X, y = make_blobs(
         n_samples=nrows, centers=n_clusters, n_features=ncols, random_state=0
     )
@@ -402,6 +367,9 @@ def test_knn_separate_index_search(input_type, nrows, n_feats, k, metric):
 
 @pytest.mark.parametrize("input_type", ["dataframe", "ndarray"])
 @pytest.mark.parametrize("nrows", [unit_param(500), stress_param(70000)])
+@pytest.mark.filterwarnings(
+    "ignore:algorithm='rbc' requires sqrt\\(n_samples\\) >= n_neighbors.*:UserWarning"
+)
 @pytest.mark.parametrize("n_feats", [unit_param(3), stress_param(1000)])
 @pytest.mark.parametrize(
     "k", [unit_param(3), unit_param(35), stress_param(50)]
@@ -466,7 +434,7 @@ def test_nn_downcast_fails(input_type, nrows, n_feats):
     knn_cu = cuKNN()
     if input_type == "dataframe":
         X_pd = pd.DataFrame({"fea%d" % i: X[0:, i] for i in range(X.shape[1])})
-        X_cudf = cudf.DataFrame.from_pandas(X_pd)
+        X_cudf = cudf.DataFrame(X_pd)
         knn_cu.fit(X_cudf, convert_dtype=True)
 
     with pytest.raises(Exception):
@@ -477,6 +445,54 @@ def test_nn_downcast_fails(input_type, nrows, n_feats):
     knn_cu = cuKNN()
     with pytest.raises(Exception):
         knn_cu.fit(X, convert_dtype=False)
+
+
+def check_knn_graph(
+    X, k, mode, metric, p, input_type, output_type, as_instance, include_self
+):
+    if as_instance:
+        sparse_sk = sklearn.neighbors.kneighbors_graph(
+            X.get(),
+            k,
+            mode=mode,
+            metric=metric,
+            p=p,
+            include_self=include_self,
+        )
+    else:
+        knn_sk = skKNN(metric=metric, p=p)
+        knn_sk.fit(X.get())
+        sparse_sk = knn_sk.kneighbors_graph(X.get(), k, mode=mode)
+
+    if input_type == "dataframe":
+        X = cudf.DataFrame(X)
+
+    with cuml.using_output_type(output_type):
+        if as_instance:
+            sparse_cu = cuml.neighbors.kneighbors_graph(
+                X, k, mode=mode, metric=metric, p=p, include_self=include_self
+            )
+        else:
+            knn_cu = cuKNN(metric=metric, p=p)
+            knn_cu.fit(X)
+            sparse_cu = knn_cu.kneighbors_graph(X, k, mode=mode)
+
+    assert np.array_equal(sparse_sk.data.shape, sparse_cu.data.shape)
+    assert np.array_equal(sparse_sk.indices.shape, sparse_cu.indices.shape)
+    assert np.array_equal(sparse_sk.indptr.shape, sparse_cu.indptr.shape)
+    assert np.array_equal(sparse_sk.toarray().shape, sparse_cu.toarray().shape)
+
+    if output_type == "cupy":
+        assert np.allclose(
+            sparse_sk.toarray(),
+            np.asarray(sparse_cu.toarray().get()),
+            atol=1e-4,
+        )
+
+    if output_type == "cupy" or output_type is None:
+        assert cupyx.scipy.sparse.isspmatrix_csr(sparse_cu)
+    else:
+        assert isspmatrix_csr(sparse_cu)
 
 
 @pytest.mark.parametrize(
@@ -501,37 +517,44 @@ def test_knn_graph(
 ):
     X, _ = make_blobs(n_samples=nrows, n_features=n_feats, random_state=0)
 
-    if as_instance:
-        sparse_sk = sklearn.neighbors.kneighbors_graph(
-            X.get(), k, mode=mode, metric=metric, p=p, include_self="auto"
+    check_knn_graph(
+        X, k, mode, metric, p, input_type, output_type, as_instance, "auto"
+    )
+
+
+def test_knn_graph_duplicate_point():
+    X = cp.array([[1, 5], [1, 5], [7, 3], [9, 6], [10, 1]])
+
+    check_knn_graph(
+        X, 2, "connectivity", "euclidean", 2, "ndarray", "cupy", True, False
+    )
+
+
+@pytest.mark.parametrize("algorithm", ["brute", "rbc", "ivfpq", "ivfflat"])
+def test_knn_graph_algorithm(algorithm):
+    n_features = 3 if algorithm == "rbc" else 5
+    X, _ = make_blobs(n_samples=100, n_features=n_features, random_state=42)
+
+    sk_knn = skKNN(n_neighbors=5).fit(X.get())
+    cu_knn = cuKNN(n_neighbors=5, algorithm=algorithm).fit(X)
+
+    cu_graph = cu_knn.kneighbors_graph(X)
+    assert cupyx.scipy.sparse.isspmatrix_csr(cu_graph)
+    np.testing.assert_array_equal(cu_graph.sum(axis=1).get(), 5)
+
+    if algorithm in ("brute", "rbc"):
+        # These algorithms are exact, can check for exact equality
+        sk_graph = sk_knn.kneighbors_graph(X.get())
+        np.testing.assert_array_equal(
+            sk_graph.toarray(),
+            cu_graph.toarray().get(),
         )
     else:
-        knn_sk = skKNN(metric=metric, p=p)
-        knn_sk.fit(X.get())
-        sparse_sk = knn_sk.kneighbors_graph(X.get(), k, mode=mode)
-
-    if input_type == "dataframe":
-        X = cudf.DataFrame(X)
-
-    with cuml.using_output_type(output_type):
-        if as_instance:
-            sparse_cu = cuml.neighbors.kneighbors_graph(
-                X, k, mode=mode, metric=metric, p=p, include_self="auto"
-            )
-        else:
-            knn_cu = cuKNN(metric=metric, p=p)
-            knn_cu.fit(X)
-            sparse_cu = knn_cu.kneighbors_graph(X, k, mode=mode)
-
-    assert np.array_equal(sparse_sk.data.shape, sparse_cu.data.shape)
-    assert np.array_equal(sparse_sk.indices.shape, sparse_cu.indices.shape)
-    assert np.array_equal(sparse_sk.indptr.shape, sparse_cu.indptr.shape)
-    assert np.array_equal(sparse_sk.toarray().shape, sparse_cu.toarray().shape)
-
-    if output_type == "cupy" or output_type is None:
-        assert cupyx.scipy.sparse.isspmatrix_csr(sparse_cu)
-    else:
-        assert isspmatrix_csr(sparse_cu)
+        # Approximate algorithms may have differences. Instead of checking
+        # exact equality, here we check that the graph found for the nearest 5
+        # neighbors is a subset of the graph found for nearest 20.
+        sk_graph = sk_knn.kneighbors_graph(X.get(), 20)
+        assert ((sk_graph - cu_graph.get()) < 0).sum() == 0
 
 
 @pytest.mark.parametrize(
@@ -573,12 +596,14 @@ def test_nearest_neighbors_rbc(distance_dims, n_neighbors, nrows):
             X[:query_rows, :], n_neighbors=n_neighbors
         )
 
-    assert len(brute_d[brute_d != rbc_d]) == 0
+    cp.testing.assert_allclose(brute_d, rbc_d, atol=1e-3, rtol=1e-3)
 
     # All the distances match so allow a couple mismatched indices
     # through from potential non-determinism in exact matching
     # distances
-    assert len(brute_i[brute_i != rbc_i]) <= 3
+    assert (
+        len(brute_i[brute_i != rbc_i]) <= 3 if distance != "haversine" else 10
+    )
 
 
 @pytest.mark.parametrize("metric", valid_metrics_sparse())
@@ -615,14 +640,12 @@ def test_nearest_neighbors_sparse(
         a = a.astype("bool").astype("float32")
         b = b.astype("bool").astype("float32")
 
-    logger.set_level(logger.level_debug)
     nn = cuKNN(
         metric=metric,
         p=2.0,
         n_neighbors=n_neighbors,
         algorithm="brute",
         output_type="numpy",
-        verbose=logger.level_debug,
         algo_params={
             "batch_size_index": batch_size_index,
             "batch_size_query": batch_size_query,
@@ -655,7 +678,6 @@ def test_nearest_neighbors_sparse(
     # Jaccard & Chebyshev have a high potential for mismatched indices
     # due to duplicate distances. We can ignore the indices in this case.
     if metric not in ["jaccard", "chebyshev"]:
-
         # The actual neighbors returned in the presence of duplicate distances
         # is non-deterministic. If we got to this point, the distances all
         # match between cuml and sklearn. We set a reasonable threshold
@@ -666,7 +688,6 @@ def test_nearest_neighbors_sparse(
 
 @pytest.mark.parametrize("n_neighbors", [1, 5, 6])
 def test_haversine(n_neighbors):
-
     hoboken_nj = [40.745255, -74.034775]
     port_hueneme_ca = [34.155834, -119.202789]
     auburn_ny = [42.933334, -76.566666]
@@ -706,7 +727,6 @@ def test_haversine(n_neighbors):
 
 @pytest.mark.xfail(raises=RuntimeError)
 def test_haversine_fails_high_dimensions():
-
     data = np.array([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]])
 
     cunn = cuKNN(metric="haversine", n_neighbors=2, algorithm="brute")
@@ -715,5 +735,8 @@ def test_haversine_fails_high_dimensions():
 
 
 def test_n_jobs_parameter_passthrough():
-    cunn = cuKNN()
+    """Check that `n_jobs` is supported for compatibility with imbalanced-learn"""
+    cunn = cuKNN(n_jobs=1)
+    assert cunn.n_jobs == 1
     cunn.set_params(n_jobs=12)
+    assert cunn.n_jobs == 12

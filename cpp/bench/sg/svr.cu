@@ -1,27 +1,15 @@
 /*
- * Copyright (c) 2020-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "benchmark.cuh"
 
+#include <cuml/matrix/kernel_params.hpp>
 #include <cuml/svm/svc.hpp>
 #include <cuml/svm/svm_model.h>
 #include <cuml/svm/svm_parameter.h>
 #include <cuml/svm/svr.hpp>
-
-#include <raft/distance/kernels.cuh>
 
 #include <cmath>
 #include <utility>
@@ -34,7 +22,7 @@ template <typename D>
 struct SvrParams {
   DatasetParams data;
   RegressionParams regression;
-  raft::distance::kernels::KernelParams kernel;
+  ML::matrix::KernelParams kernel;
   ML::SVM::SvmParameter svm_param;
   ML::SVM::SvmModel<D>* model;
 };
@@ -50,7 +38,7 @@ class SVR : public RegressionFixture<D> {
   {
     std::vector<std::string> kernel_names{"linear", "poly", "rbf", "tanh"};
     std::ostringstream oss;
-    oss << name << "/" << kernel_names[kernel.kernel] << p.data;
+    oss << name << "/" << kernel_names[static_cast<int>(kernel.kernel)] << p.data;
     this->SetName(oss.str().c_str());
   }
 
@@ -76,7 +64,7 @@ class SVR : public RegressionFixture<D> {
   }
 
  private:
-  raft::distance::kernels::KernelParams kernel;
+  ML::matrix::KernelParams kernel;
   ML::SVM::SvmParameter svm_param;
   ML::SVM::SvmModel<D>* model;
 };
@@ -99,19 +87,18 @@ std::vector<SvrParams<D>> getInputs()
   p.regression.tail_strength  = 0.5;  // unused when effective_rank = -1
   p.regression.noise          = 1;
 
-  // SvmParameter{C, cache_size, max_iter, nochange_steps, tol, verbosity,
+  // SvmParameter{C, cache_size, max_outer_iter, max_iter, nochange_steps, tol, verbosity,
   //              epsilon, svmType})
-  p.svm_param =
-    ML::SVM::SvmParameter{1, 200, 200, 100, 1e-3, CUML_LEVEL_INFO, 0.1, ML::SVM::EPSILON_SVR};
+  p.svm_param = ML::SVM::SvmParameter{
+    1, 200, 200, -1, 100, 1e-3, rapids_logger::level_enum::info, 0.1, ML::SVM::EPSILON_SVR};
   p.model = new ML::SVM::SvmModel<D>{0, 0, 0, 0};
 
   std::vector<Triplets> rowcols = {{50000, 2, 2}, {1024, 10000, 10}, {3000, 200, 200}};
 
-  std::vector<raft::distance::kernels::KernelParams> kernels{
-    raft::distance::kernels::KernelParams{raft::distance::kernels::LINEAR, 3, 1, 0},
-    raft::distance::kernels::KernelParams{raft::distance::kernels::POLYNOMIAL, 3, 1, 0},
-    raft::distance::kernels::KernelParams{raft::distance::kernels::RBF, 3, 1, 0},
-    raft::distance::kernels::KernelParams{raft::distance::kernels::TANH, 3, 0.1, 0}};
+  std::vector<ML::matrix::KernelParams> kernels{{ML::matrix::KernelType::LINEAR, 3, 1, 0},
+                                                {ML::matrix::KernelType::POLYNOMIAL, 3, 1, 0},
+                                                {ML::matrix::KernelType::RBF, 3, 1, 0},
+                                                {ML::matrix::KernelType::TANH, 3, 0.1, 0}};
 
   for (auto& rc : rowcols) {
     p.data.nrows               = rc.nrows;

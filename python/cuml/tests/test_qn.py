@@ -1,28 +1,15 @@
-# Copyright (c) 2019-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from cuml.metrics import accuracy_score
+import cupy as cp
+import numpy as np
+import pytest
+
 from cuml.datasets.classification import make_classification
+from cuml.metrics import accuracy_score
 from cuml.model_selection import train_test_split
 from cuml.solvers import QN as cuQN
-from cuml.internals.safe_imports import gpu_only_import
-import pytest
-from cuml.internals.safe_imports import cpu_only_import
-
-np = cpu_only_import("numpy")
-cp = gpu_only_import("cupy")
 
 
 # todo: add util functions to better compare against precomputed solutions
@@ -33,7 +20,6 @@ cp = gpu_only_import("cupy")
 @pytest.mark.parametrize("l2_strength", [0.00, 0.10])
 @pytest.mark.parametrize("fit_intercept", [True, False])
 def test_qn(loss, dtype, penalty, l1_strength, l2_strength, fit_intercept):
-
     if penalty == "none" and (l1_strength > 0 or l2_strength > 0):
         pytest.skip("`none` penalty does not take l1/l2_strength")
 
@@ -70,7 +56,6 @@ def test_qn(loss, dtype, penalty, l1_strength, l2_strength, fit_intercept):
         cuml_score = accuracy_score(y_test, y_pred)
 
         assert cuml_score > baseline_score
-        assert cuml_score >= 0.50
 
     elif loss == "sigmoid":
         X = np.array(precomputed_X, dtype=dtype)

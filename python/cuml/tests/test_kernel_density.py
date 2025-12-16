@@ -1,31 +1,25 @@
 #
-# Copyright (c) 2022-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from cuml.testing.utils import as_type
-from sklearn.model_selection import GridSearchCV
+import cupy as cp
+import numpy as np
 import pytest
+import sklearn.neighbors
+from hypothesis import assume, example, given, settings
+from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
-from hypothesis import given, settings, assume, strategies as st
-from cuml.neighbors import KernelDensity, VALID_KERNELS, logsumexp_kernel
-from cuml.common.exceptions import NotFittedError
+from sklearn.datasets import make_blobs
 from sklearn.metrics import pairwise_distances as skl_pairwise_distances
+from sklearn.model_selection import GridSearchCV
 from sklearn.neighbors._ball_tree import kernel_norm
-from cuml.internals.safe_imports import cpu_only_import
 
-np = cpu_only_import("numpy")
+import cuml
+from cuml.common.exceptions import NotFittedError
+from cuml.neighbors import VALID_KERNELS, KernelDensity
+from cuml.neighbors.kernel_density import logsumexp
+from cuml.testing.utils import as_type
 
 
 # not in log probability space
@@ -82,6 +76,17 @@ metrics_strategy = st.sampled_from(
 
 
 @settings(deadline=None)
+@example(
+    arrays=as_type(
+        "numpy",
+        np.array([[1.0, 2.0], [3.0, 4.0]]),
+        np.array([[1.5, 2.5]]),
+        None,
+    ),
+    kernel="gaussian",
+    metric="euclidean",
+    bandwidth=1.0,
+)
 @given(
     array_strategy(),
     st.sampled_from(VALID_KERNELS),
@@ -96,9 +101,10 @@ def test_kernel_density(arrays, kernel, metric, bandwidth):
         # cosine is numerically unstable at high dimensions
         # for both cuml and sklearn
         assume(X.shape[1] <= 20)
-    kde = KernelDensity(kernel=kernel, metric=metric, bandwidth=bandwidth).fit(
-        X, sample_weight=sample_weight
+    kde = KernelDensity(
+        kernel=kernel, metric=metric, bandwidth=bandwidth, output_type="cupy"
     )
+    kde.fit(X, sample_weight=sample_weight)
     cuml_prob = kde.score_samples(X)
     cuml_prob_test = kde.score_samples(X_test)
 
@@ -111,14 +117,14 @@ def test_kernel_density(arrays, kernel, metric, bandwidth):
         )
         tol = 1e-3
         assert np.allclose(
-            np.exp(as_type("numpy", cuml_prob)),
+            np.exp(as_type("numpy", cuml_prob), dtype="float64"),
             ref_prob,
             rtol=tol,
             atol=tol,
             equal_nan=True,
         )
         assert np.allclose(
-            np.exp(as_type("numpy", cuml_prob_test)),
+            np.exp(as_type("numpy", cuml_prob_test), dtype="float64"),
             ref_prob_test,
             rtol=tol,
             atol=tol,
@@ -140,23 +146,52 @@ def test_kernel_density(arrays, kernel, metric, bandwidth):
             assert chi.sf(nearest.max(), X.shape[1], scale=bandwidth) > 1e-8
         elif kernel == "tophat":
             assert np.all(nearest <= bandwidth)
-    else:
+    elif kernel not in ["gaussian", "tophat"]:
         with pytest.raises(
             NotImplementedError,
-            match=r"Only \['gaussian', 'tophat'\] kernels,"
-            " and the euclidean metric are supported.",
+            match=r"Only \['gaussian', 'tophat'\] kernels are supported.",
         ):
             kde.sample(100)
 
 
-def test_logaddexp():
+@pytest.mark.parametrize("bandwidth", ["scott", "silverman", 5.0])
+@pytest.mark.parametrize("n_rows, n_cols", [(13, 17), (17, 13)])
+def test_bandwidth(bandwidth, n_rows, n_cols):
+    X, _ = make_blobs(n_samples=n_rows, n_features=n_cols)
+    cu_model = cuml.KernelDensity(bandwidth=bandwidth).fit(X)
+    sk_model = sklearn.neighbors.KernelDensity(bandwidth=bandwidth).fit(X)
+    assert cu_model.bandwidth_ == sk_model.bandwidth_
+
+
+@pytest.mark.parametrize(
+    "kernel",
+    ["gaussian", "tophat", "epanechnikov", "exponential", "linear", "cosine"],
+)
+@pytest.mark.parametrize("fit_dtype", ["float32", "float64"])
+@pytest.mark.parametrize("score_dtype", ["float32", "float64"])
+def test_score_samples_output_type_and_dtype(kernel, fit_dtype, score_dtype):
+    """Check that the output dtype and type of `score_samples` is correct"""
+    X, _ = make_blobs(n_samples=200, n_features=10, centers=5, random_state=42)
+    X_train, X_score = X[:100], X[100:]
+    X_train = X_train.astype(fit_dtype)
+    X_score = X_score.astype(score_dtype)
+    kde = KernelDensity(kernel=kernel).fit(X_train)
+    res = kde.score_samples(X_score)
+    assert res.dtype == fit_dtype
+    assert isinstance(res, np.ndarray)
+    with cuml.using_output_type("cupy"):
+        res = kde.score_samples(X_score)
+    assert res.dtype == fit_dtype
+    assert isinstance(res, cp.ndarray)
+
+
+def test_logsumexp():
     X = np.array([[0.0, 0.0], [0.0, 0.0]])
-    out = np.zeros(X.shape[0])
-    logsumexp_kernel.forall(out.size)(X, out)
+    out = logsumexp(cp.asarray(X), axis=1).get()
     assert np.allclose(out, np.logaddexp.reduce(X, axis=1))
 
     X = np.array([[3.0, 1.0], [0.2, 0.7]])
-    logsumexp_kernel.forall(out.size)(X, out)
+    out = logsumexp(cp.asarray(X), axis=1).get()
     assert np.allclose(out, np.logaddexp.reduce(X, axis=1))
 
 
@@ -185,3 +220,16 @@ def test_not_fitted():
         kde.sample(X)
     with pytest.raises(NotFittedError):
         kde.score_samples(X)
+
+
+def test_bad_sample_weight_errors():
+    kde = KernelDensity()
+    X = np.array([[0.0, 1.0], [2.0, 0.5]])
+
+    with pytest.raises(ValueError, match="Expected 2 rows but got 3 rows."):
+        kde.fit(X, sample_weight=np.array([1, 2, 3]))
+
+    with pytest.raises(
+        ValueError, match="Expected 1 columns but got 2 columns."
+    ):
+        kde.fit(X, sample_weight=np.array([[1, 2], [3, 4]]))

@@ -1,34 +1,19 @@
-# Copyright (c) 2021-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2021-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from sklearn.datasets import load_iris
-from sklearn.datasets import load_digits
 import math
-from cuml.metrics import trustworthiness
-from cuml.internals import logger
-from cuml.internals.safe_imports import cpu_only_import
+
+import cupy as cp
+import numpy as np
 import pytest
+from sklearn.datasets import load_digits, load_iris
 
-from cuml.internals.safe_imports import gpu_only_import
-
-cp = gpu_only_import("cupy")
-np = cpu_only_import("numpy")
+from cuml.internals import logger
+from cuml.metrics import trustworthiness
 
 
 def _load_dataset(dataset, n_rows):
-
     if dataset == "digits":
         local_X, local_y = load_digits(return_X_y=True)
 
@@ -72,8 +57,8 @@ def _umap_mnmg_trustworthiness(
     parallel, report trustworthiness
     """
     import dask.array as da
-    from cuml.dask.manifold import UMAP as MNMG_UMAP
 
+    from cuml.dask.manifold import UMAP as MNMG_UMAP
     from cuml.manifold import UMAP
 
     local_model = UMAP(n_neighbors=n_neighbors, random_state=42, init="random")

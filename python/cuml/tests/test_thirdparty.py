@@ -1,50 +1,50 @@
-# Copyright (c) 2021-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2021-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from cuml.testing.test_preproc_utils import assert_allclose
+import cupy as cp
+import cupyx as cpx
+import numpy as np
+import pytest
+from sklearn.utils.extmath import (
+    _incremental_mean_and_var as sk_incremental_mean_and_var,
+)
+from sklearn.utils.extmath import row_norms as sk_row_norms
+from sklearn.utils.sparsefuncs import (
+    inplace_column_scale as sk_inplace_column_scale,
+)
 from sklearn.utils.sparsefuncs import (
     inplace_csr_column_scale as sk_inplace_csr_column_scale,
+)
+from sklearn.utils.sparsefuncs import (
     inplace_csr_row_scale as sk_inplace_csr_row_scale,
-    inplace_column_scale as sk_inplace_column_scale,
+)
+from sklearn.utils.sparsefuncs import (
     mean_variance_axis as sk_mean_variance_axis,
-    min_max_axis as sk_min_max_axis,
+)
+from sklearn.utils.sparsefuncs import min_max_axis as sk_min_max_axis
+
+from cuml._thirdparty.sklearn.utils.extmath import (
+    _incremental_mean_and_var as cu_incremental_mean_and_var,
+)
+from cuml._thirdparty.sklearn.utils.extmath import row_norms as cu_row_norms
+from cuml._thirdparty.sklearn.utils.sparsefuncs import (
+    inplace_column_scale as cu_inplace_column_scale,
 )
 from cuml._thirdparty.sklearn.utils.sparsefuncs import (
     inplace_csr_column_scale as cu_inplace_csr_column_scale,
+)
+from cuml._thirdparty.sklearn.utils.sparsefuncs import (
     inplace_csr_row_scale as cu_inplace_csr_row_scale,
-    inplace_column_scale as cu_inplace_column_scale,
+)
+from cuml._thirdparty.sklearn.utils.sparsefuncs import (
     mean_variance_axis as cu_mean_variance_axis,
+)
+from cuml._thirdparty.sklearn.utils.sparsefuncs import (
     min_max_axis as cu_min_max_axis,
 )
-from sklearn.utils.extmath import (
-    row_norms as sk_row_norms,
-    _incremental_mean_and_var as sk_incremental_mean_and_var,
-)
-from cuml._thirdparty.sklearn.utils.extmath import (
-    row_norms as cu_row_norms,
-    _incremental_mean_and_var as cu_incremental_mean_and_var,
-)
 from cuml._thirdparty.sklearn.utils.validation import check_X_y
-from cuml.internals.safe_imports import gpu_only_import
-import pytest
-
-from cuml.internals.safe_imports import cpu_only_import
-
-np = cpu_only_import("numpy")
-cp = gpu_only_import("cupy")
-cpx = gpu_only_import("cupyx")
+from cuml.testing.test_preproc_utils import assert_allclose
 
 
 @pytest.fixture(scope="session")

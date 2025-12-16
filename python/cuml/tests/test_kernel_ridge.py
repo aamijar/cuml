@@ -1,35 +1,24 @@
-# Copyright (c) 2022-2023, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-from cuml.testing.utils import as_type
-from hypothesis.extra.numpy import arrays
-from hypothesis import given, settings, assume, strategies as st
-from sklearn.kernel_ridge import KernelRidge as sklKernelRidge
 import inspect
 import math
-import pytest
-from sklearn.metrics.pairwise import pairwise_kernels as skl_pairwise_kernels
-from cuml.metrics import pairwise_kernels, PAIRWISE_KERNEL_FUNCTIONS
-from cuml import KernelRidge as cuKernelRidge
-from cuml.internals.safe_imports import cpu_only_import
-from cuml.internals.safe_imports import gpu_only_import_from
-from cuml.internals.safe_imports import gpu_only_import
 
-cp = gpu_only_import("cupy")
-linalg = gpu_only_import_from("cupy", "linalg")
-np = cpu_only_import("numpy")
-cuda = gpu_only_import_from("numba", "cuda")
+import cupy as cp
+import numpy as np
+import pytest
+from cupy import linalg
+from hypothesis import assume, example, given, settings
+from hypothesis import strategies as st
+from hypothesis.extra.numpy import arrays
+from numba import cuda
+from sklearn.kernel_ridge import KernelRidge as sklKernelRidge
+from sklearn.metrics.pairwise import pairwise_kernels as skl_pairwise_kernels
+
+import cuml
+from cuml import KernelRidge as cuKernelRidge
+from cuml.metrics import PAIRWISE_KERNEL_FUNCTIONS, pairwise_kernels
+from cuml.testing.utils import as_type
 
 
 def gradient_norm(model, X, y, K, sw=None):
@@ -44,11 +33,12 @@ def gradient_norm(model, X, y, K, sw=None):
     betas = cp.array(
         as_type("cupy", model.dual_coef_), dtype=np.float64
     ).reshape(y.shape)
+    alphas = cp.asarray(model.alpha)
 
     # initialise to NaN in case below loop has 0 iterations
-    grads = cp.full_like(y, np.NAN)
+    grads = cp.full_like(y, np.nan)
     for i, (beta, target, current_alpha) in enumerate(
-        zip(betas.T, y.T, model.alpha)
+        zip(betas.T, y.T, alphas)
     ):
         grads[:, i] = 0.0
         grads[:, i] = -cp.dot(K * sw, target)
@@ -108,8 +98,7 @@ def test_pairwise_kernels_basic():
 
     with pytest.raises(
         ValueError,
-        match="Extra kernel parameters "
-        "must be passed as keyword arguments.",
+        match="Extra kernel parameters must be passed as keyword arguments.",
     ):
         pairwise_kernels(X, metric=bad_numba_kernel2)
 
@@ -186,6 +175,12 @@ def array_strategy(draw):
     return as_type(type, X, Y)
 
 
+@example(
+    kernel_arg=("linear", {}),
+    XY=as_type(
+        "numpy", np.array([[1.0, 2.0], [3.0, 4.0]]), np.array([[1.5, 2.5]])
+    ),
+)
 @given(kernel_arg_strategy(), array_strategy())
 @settings(deadline=None)
 @pytest.mark.skip("https://github.com/rapidsai/cuml/issues/5177")
@@ -249,6 +244,20 @@ def estimator_array_strategy(draw):
     return (*as_type(type, X, y, X_test, alpha, sample_weight), dtype)
 
 
+@example(
+    kernel_arg=("linear", {}),
+    arrays=(
+        np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]),  # X
+        np.array([1.0, 2.0, 3.0]),  # y
+        np.array([[2.0, 3.0], [4.0, 5.0]]),  # X_test
+        np.array([0.1]),  # alpha
+        None,  # sample_weight
+        np.float32,  # dtype
+    ),
+    gamma=1.0,
+    degree=1,
+    coef0=0.0,
+)
 @given(
     kernel_arg_strategy(),
     estimator_array_strategy(),
@@ -282,7 +291,7 @@ def test_estimator(kernel_arg, arrays, gamma, degree, coef0):
         X = (X - as_type("numpy", X).min()) + 1.0
 
     model.fit(X, y, sample_weight)
-    pred = model.predict(X_test).get()
+    pred = model.predict(X_test)
     if dtype == np.float64:
         # For a convex optimisation problem we should arrive at gradient norm 0
         # If the solution has converged correctly
@@ -300,8 +309,28 @@ def test_estimator(kernel_arg, arrays, gamma, degree, coef0):
 
         skl_pred = skl_model.predict(as_type("numpy", X_test))
         assert np.allclose(
-            as_type("numpy", pred), skl_pred, atol=1e-2, rtol=1e-2
+            as_type("numpy", pred).squeeze(),
+            skl_pred.squeeze(),
+            atol=1e-2,
+            rtol=1e-2,
         )
+
+
+def test_predict_output_type():
+    rng = np.random.RandomState(42)
+
+    X = 5 * rng.rand(10000, 1)
+    y = np.sin(X).ravel()
+
+    kr = cuKernelRidge(kernel="rbf", gamma=0.1)
+    kr.fit(X, y)
+
+    res = kr.predict(X)
+    assert isinstance(res, np.ndarray)
+
+    with cuml.using_output_type("cupy"):
+        res = kr.predict(X)
+    assert isinstance(res, cp.ndarray)
 
 
 def test_precomputed():

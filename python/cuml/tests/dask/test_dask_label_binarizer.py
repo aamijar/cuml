@@ -1,27 +1,13 @@
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 
-from cuml.internals.safe_imports import gpu_only_import
+import cupy as cp
+import dask
+import numpy as np
 import pytest
+
 from cuml.dask.preprocessing import LabelBinarizer
 from cuml.testing.utils import array_equal
-
-import dask
-from cuml.internals.safe_imports import cpu_only_import
-
-np = cpu_only_import("numpy")
-cp = gpu_only_import("cupy")
 
 
 @pytest.mark.parametrize(
@@ -33,7 +19,6 @@ cp = gpu_only_import("cupy")
 )
 @pytest.mark.parametrize("multipart", [True, False])
 def test_basic_functions(labels, multipart, client):
-
     fit_labels, xform_labels = labels
 
     s = cp.asarray(fit_labels, dtype=np.int32)
@@ -75,10 +60,7 @@ def test_basic_functions(labels, multipart, client):
 )
 @pytest.mark.xfail(
     raises=ValueError,
-    reason="Sparse output disabled until "
-    "Dask supports sparse CuPy "
-    "arrays",
+    reason="Sparse output disabled until Dask supports sparse CuPy arrays",
 )
 def test_sparse_output_fails(labels, client):
-
     LabelBinarizer(client=client, sparse_output=True)

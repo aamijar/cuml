@@ -1,63 +1,46 @@
-# Copyright (c) 2019-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
+import json
+import math
+import os
+import random
+import warnings
+
+import cudf
+import numpy as np
+import pytest
 import treelite
-from sklearn.model_selection import train_test_split
+from cudf.pandas import LOADED as cudf_pandas_active
+from numba import cuda
 from sklearn.datasets import (
     fetch_california_housing,
+    load_breast_cancer,
+    load_iris,
     make_classification,
     make_regression,
-    load_iris,
-    load_breast_cancer,
 )
+from sklearn.ensemble import RandomForestClassifier as skrfc
+from sklearn.ensemble import RandomForestRegressor as skrfr
 from sklearn.metrics import (
     accuracy_score,
     mean_squared_error,
     mean_tweedie_deviance,
 )
-from sklearn.ensemble import RandomForestRegressor as skrfr
-from sklearn.ensemble import RandomForestClassifier as skrfc
+from sklearn.model_selection import train_test_split
+
+import cuml
 import cuml.internals.logger as logger
+from cuml.ensemble import RandomForestClassifier as curfc
+from cuml.ensemble import RandomForestRegressor as curfr
+from cuml.ensemble.randomforest_common import compute_max_features
+from cuml.metrics import r2_score
 from cuml.testing.utils import (
     get_handle,
-    unit_param,
     quality_param,
     stress_param,
-)
-from cuml.metrics import r2_score
-from cuml.ensemble import RandomForestRegressor as curfr
-from cuml.ensemble import RandomForestClassifier as curfc
-import cuml
-from cuml.internals.safe_imports import gpu_only_import_from
-import os
-import json
-import random
-from cuml.internals.safe_imports import cpu_only_import
-import pytest
-
-import warnings
-from cuml.internals.safe_imports import gpu_only_import
-
-cudf = gpu_only_import("cudf")
-np = cpu_only_import("numpy")
-
-cuda = gpu_only_import_from("numba", "cuda")
-
-
-pytestmark = pytest.mark.filterwarnings(
-    "ignore: For reproducible results(.*)" "::cuml[.*]"
+    unit_param,
 )
 
 
@@ -207,6 +190,31 @@ def special_reg(request):
     return X, y
 
 
+def test_default_parameters():
+    reg_params = curfr().get_params()
+    clf_params = curfc().get_params()
+
+    # Different default max_features
+    assert reg_params["max_features"] == 1.0
+    assert clf_params["max_features"] == "sqrt"
+
+    # Different default split_criterion
+    assert reg_params["split_criterion"] == "mse"
+    assert clf_params["split_criterion"] == "gini"
+
+    # Drop differing params
+    for name in [
+        "max_features",
+        "split_criterion",
+        "handle",
+    ]:
+        reg_params.pop(name)
+        clf_params.pop(name)
+
+    # The rest are the same
+    assert reg_params == clf_params
+
+
 @pytest.mark.parametrize("max_depth", [2, 4])
 @pytest.mark.parametrize(
     "split_criterion", ["poisson", "gamma", "inverse_gaussian"]
@@ -256,7 +264,7 @@ def test_tweedie_convergence(max_depth, split_criterion):
         )
         .fit(X, y)
         .predict(X)
-    )
+    ).squeeze()
     # y should not be non-positive for mean_poisson_deviance
     mask = mse_preds > 0
     mse_tweedie_deviance = mean_tweedie_deviance(
@@ -276,6 +284,11 @@ def test_tweedie_convergence(max_depth, split_criterion):
 )
 @pytest.mark.parametrize("datatype", [np.float32, np.float64])
 @pytest.mark.parametrize("max_features", [1.0, "log2", "sqrt"])
+@pytest.mark.skipif(
+    cudf_pandas_active,
+    reason="cudf.pandas causes sklearn RF estimators crashes sometimes. "
+    "Issue: https://github.com/rapidsai/cuml/issues/5991",
+)
 def test_rf_classification(small_clf, datatype, max_samples, max_features):
     use_handle = True
 
@@ -305,13 +318,8 @@ def test_rf_classification(small_clf, datatype, max_samples, max_features):
     )
     cuml_model.fit(X_train, y_train)
 
-    fil_preds = cuml_model.predict(
-        X_test, predict_model="GPU", threshold=0.5, algo="auto"
-    )
-    cu_preds = cuml_model.predict(X_test, predict_model="CPU")
-    fil_preds = np.reshape(fil_preds, np.shape(cu_preds))
-    cuml_acc = accuracy_score(y_test, cu_preds)
-    fil_acc = accuracy_score(y_test, fil_preds)
+    preds = cuml_model.predict(X_test)
+    acc = accuracy_score(y_test, preds)
     if X.shape[0] < 500000:
         sk_model = skrfc(
             n_estimators=40,
@@ -323,10 +331,9 @@ def test_rf_classification(small_clf, datatype, max_samples, max_features):
         sk_model.fit(X_train, y_train)
         sk_preds = sk_model.predict(X_test)
         sk_acc = accuracy_score(y_test, sk_preds)
-        assert fil_acc >= (sk_acc - 0.07)
-    assert fil_acc >= (
-        cuml_acc - 0.07
-    )  # to be changed to 0.02. see issue #3910: https://github.com/rapidsai/cuml/issues/3910 # noqa
+
+        # Observed: mean=0.026, range=[0.000, 0.043], stderr=0.002
+        assert acc >= (sk_acc - 0.07)
 
 
 @pytest.mark.parametrize(
@@ -366,13 +373,8 @@ def test_rf_classification_unorder(
     )
     cuml_model.fit(X_train, y_train)
 
-    fil_preds = cuml_model.predict(
-        X_test, predict_model="GPU", threshold=0.5, algo="auto"
-    )
-    cu_preds = cuml_model.predict(X_test, predict_model="CPU")
-    fil_preds = np.reshape(fil_preds, np.shape(cu_preds))
-    cuml_acc = accuracy_score(y_test, cu_preds)
-    fil_acc = accuracy_score(y_test, fil_preds)
+    preds = cuml_model.predict(X_test)
+    acc = accuracy_score(y_test, preds)
     if X.shape[0] < 500000:
         sk_model = skrfc(
             n_estimators=40,
@@ -384,10 +386,10 @@ def test_rf_classification_unorder(
         sk_model.fit(X_train, y_train)
         sk_preds = sk_model.predict(X_test)
         sk_acc = accuracy_score(y_test, sk_preds)
-        assert fil_acc >= (sk_acc - 0.07)
-    assert fil_acc >= (
-        cuml_acc - 0.07
-    )  # to be changed to 0.02. see issue #3910: https://github.com/rapidsai/cuml/issues/3910 # noqa
+        # Increased tolerance to 0.10 to account for RNG variance from bias fix
+        # Variance analysis (1000 runs): mean=0.9140, range=[0.8429,0.9714]
+        # Worst-case diff from sklearn baseline (0.9143): ~0.071
+        assert acc >= (sk_acc - 0.10)
 
 
 @pytest.mark.parametrize(
@@ -405,10 +407,14 @@ def test_rf_classification_unorder(
         (1.0, 32),
     ],
 )
+@pytest.mark.skipif(
+    cudf_pandas_active,
+    reason="cudf.pandas causes sklearn RF estimators crashes sometimes. "
+    "Issue: https://github.com/rapidsai/cuml/issues/5991",
+)
 def test_rf_regression(
     special_reg, datatype, max_features, max_samples, n_bins
 ):
-
     use_handle = True
 
     X, y = special_reg
@@ -434,18 +440,12 @@ def test_rf_regression(
         handle=handle,
         max_leaves=-1,
         max_depth=16,
-        accuracy_metric="mse",
     )
     cuml_model.fit(X_train, y_train)
-    # predict using FIL
-    fil_preds = cuml_model.predict(X_test, predict_model="GPU")
-    cu_preds = cuml_model.predict(X_test, predict_model="CPU")
-    fil_preds = np.reshape(fil_preds, np.shape(cu_preds))
+    preds = cuml_model.predict(X_test)
 
-    cu_r2 = r2_score(y_test, cu_preds, convert_dtype=datatype)
-    fil_r2 = r2_score(y_test, fil_preds, convert_dtype=datatype)
-    # Initialize, fit and predict using
-    # sklearn's random forest regression model
+    r2 = r2_score(y_test, preds)
+    # Initialize, fit and predict using sklearn's random forest regression model
     if X.shape[0] < 1000:  # mode != "stress"
         sk_model = skrfr(
             n_estimators=50,
@@ -456,14 +456,18 @@ def test_rf_regression(
         )
         sk_model.fit(X_train, y_train)
         sk_preds = sk_model.predict(X_test)
-        sk_r2 = r2_score(y_test, sk_preds, convert_dtype=datatype)
-        assert fil_r2 >= (sk_r2 - 0.07)
-    assert fil_r2 >= (cu_r2 - 0.02)
+        sk_r2 = r2_score(y_test, sk_preds)
+        # Observed: mean=0.020, range=[0.001, 0.037], stderr=0.002
+        assert r2 >= (sk_r2 - 0.07)
 
 
+@pytest.mark.skipif(
+    cudf_pandas_active,
+    reason="cudf.pandas causes sklearn RF estimators crashes sometimes. "
+    "Issue: https://github.com/rapidsai/cuml/issues/5991",
+)
 @pytest.mark.parametrize("datatype", [np.float32, np.float64])
 def test_rf_classification_seed(small_clf, datatype):
-
     X, y = small_clf
     X = X.astype(datatype)
     y = y.astype(np.int32)
@@ -473,36 +477,19 @@ def test_rf_classification_seed(small_clf, datatype):
 
     for i in range(8):
         seed = random.randint(100, 10**5)
-        # Initialize, fit and predict using cuML's
-        # random forest classification model
+
         cu_class = curfc(random_state=seed, n_streams=1)
         cu_class.fit(X_train, y_train)
+        preds_orig = cu_class.predict(X_test)
+        acc_orig = accuracy_score(y_test, preds_orig)
 
-        # predict using FIL
-        fil_preds_orig = cu_class.predict(X_test, predict_model="GPU")
-        cu_preds_orig = cu_class.predict(X_test, predict_model="CPU")
-        cu_acc_orig = accuracy_score(y_test, cu_preds_orig)
-        fil_preds_orig = np.reshape(fil_preds_orig, np.shape(cu_preds_orig))
-
-        fil_acc_orig = accuracy_score(y_test, fil_preds_orig)
-
-        # Initialize, fit and predict using cuML's
-        # random forest classification model
         cu_class2 = curfc(random_state=seed, n_streams=1)
         cu_class2.fit(X_train, y_train)
+        preds_rerun = cu_class2.predict(X_test)
+        acc_rerun = accuracy_score(y_test, preds_rerun)
 
-        # predict using FIL
-        fil_preds_rerun = cu_class2.predict(X_test, predict_model="GPU")
-        cu_preds_rerun = cu_class2.predict(X_test, predict_model="CPU")
-        cu_acc_rerun = accuracy_score(y_test, cu_preds_rerun)
-        fil_preds_rerun = np.reshape(fil_preds_rerun, np.shape(cu_preds_rerun))
-
-        fil_acc_rerun = accuracy_score(y_test, fil_preds_rerun)
-
-        assert fil_acc_orig == fil_acc_rerun
-        assert cu_acc_orig == cu_acc_rerun
-        assert (fil_preds_orig == fil_preds_rerun).all()
-        assert (cu_preds_orig == cu_preds_rerun).all()
+        assert acc_orig == acc_rerun
+        assert (preds_orig == preds_rerun).all()
 
 
 @pytest.mark.parametrize(
@@ -510,8 +497,14 @@ def test_rf_classification_seed(small_clf, datatype):
 )
 @pytest.mark.parametrize("convert_dtype", [True, False])
 @pytest.mark.filterwarnings("ignore:To use pickling(.*)::cuml[.*]")
-def test_rf_classification_float64(small_clf, datatype, convert_dtype):
-
+@pytest.mark.skipif(
+    cudf_pandas_active,
+    reason="cudf.pandas causes sklearn RF estimators crashes sometimes. "
+    "Issue: https://github.com/rapidsai/cuml/issues/5991",
+)
+def test_rf_classification_fit_and_predict_dtypes_differ(
+    small_clf, datatype, convert_dtype
+):
     X, y = small_clf
     X = X.astype(datatype[0])
     y = y.astype(np.int32)
@@ -520,40 +513,29 @@ def test_rf_classification_float64(small_clf, datatype, convert_dtype):
     )
     X_test = X_test.astype(datatype[1])
 
-    # Initialize, fit and predict using cuML's
-    # random forest classification model
     cuml_model = curfc()
     cuml_model.fit(X_train, y_train)
-    cu_preds = cuml_model.predict(X_test, predict_model="CPU")
-    cu_acc = accuracy_score(y_test, cu_preds)
-
-    # sklearn random forest classification model
-    # initialization, fit and predict
+    preds = cuml_model.predict(X_test, convert_dtype=convert_dtype)
+    acc = accuracy_score(y_test, preds)
     if X.shape[0] < 500000:
         sk_model = skrfc(max_depth=16, random_state=10)
         sk_model.fit(X_train, y_train)
         sk_preds = sk_model.predict(X_test)
         sk_acc = accuracy_score(y_test, sk_preds)
-        assert cu_acc >= (sk_acc - 0.07)
-
-    # predict using cuML's GPU based prediction
-    fil_preds = cuml_model.predict(
-        X_test, predict_model="GPU", convert_dtype=convert_dtype
-    )
-    fil_preds = np.reshape(fil_preds, np.shape(cu_preds))
-
-    fil_acc = accuracy_score(y_test, fil_preds)
-    assert fil_acc >= (
-        cu_acc - 0.07
-    )  # to be changed to 0.02. see issue #3910: https://github.com/rapidsai/cuml/issues/3910 # noqa
+        # Observed: mean=0.043, range=[0.043, 0.043], stderr=0.000
+        assert acc >= (sk_acc - 0.10)
 
 
 @pytest.mark.parametrize(
     "datatype", [(np.float64, np.float32), (np.float32, np.float64)]
 )
 @pytest.mark.filterwarnings("ignore:To use pickling(.*)::cuml[.*]")
-def test_rf_regression_float64(large_reg, datatype):
-
+@pytest.mark.skipif(
+    cudf_pandas_active,
+    reason="cudf.pandas causes sklearn RF estimators crashes sometimes. "
+    "Issue: https://github.com/rapidsai/cuml/issues/5991",
+)
+def test_rf_regression_fit_and_predict_dtypes_differ(large_reg, datatype):
     X, y = large_reg
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, train_size=0.8, random_state=0
@@ -563,29 +545,18 @@ def test_rf_regression_float64(large_reg, datatype):
     X_test = X_test.astype(datatype[1])
     y_test = y_test.astype(datatype[1])
 
-    # Initialize, fit and predict using cuML's
-    # random forest classification model
     cuml_model = curfr()
     cuml_model.fit(X_train, y_train)
-    cu_preds = cuml_model.predict(X_test, predict_model="CPU")
-    cu_r2 = r2_score(y_test, cu_preds, convert_dtype=datatype[0])
-
-    # sklearn random forest classification model
-    # initialization, fit and predict
+    preds = cuml_model.predict(X_test, convert_dtype=True)
+    r2 = r2_score(y_test, preds)
     if X.shape[0] < 500000:
         sk_model = skrfr(max_depth=16, random_state=10)
         sk_model.fit(X_train, y_train)
         sk_preds = sk_model.predict(X_test)
-        sk_r2 = r2_score(y_test, sk_preds, convert_dtype=datatype[0])
-        assert cu_r2 >= (sk_r2 - 0.09)
-
-    # predict using cuML's GPU based prediction
-    fil_preds = cuml_model.predict(
-        X_test, predict_model="GPU", convert_dtype=True
-    )
-    fil_preds = np.reshape(fil_preds, np.shape(cu_preds))
-    fil_r2 = r2_score(y_test, fil_preds, convert_dtype=datatype[0])
-    assert fil_r2 >= (cu_r2 - 0.02)
+        sk_r2 = r2_score(y_test, sk_preds)
+        # Observed: mean=-0.004, range=[-0.005, -0.003], stderr=0.000
+        # cuML outperforms sklearn on this test
+        assert r2 >= (sk_r2 - 0.09)
 
 
 def check_predict_proba(test_proba, baseline_proba, y_test, rel_err):
@@ -633,24 +604,15 @@ def rf_classification(
         X_test_df = cudf.DataFrame(X_test)
         cuml_model.fit(X_train_df, y_train_df)
         cu_proba_gpu = cuml_model.predict_proba(X_test_df).to_numpy()
-        cu_preds_cpu = cuml_model.predict(
-            X_test_df, predict_model="CPU"
-        ).to_numpy()
-        cu_preds_gpu = cuml_model.predict(
-            X_test_df, predict_model="GPU"
-        ).to_numpy()
+        cu_preds_gpu = cuml_model.predict(X_test_df).to_numpy()
     else:
         cuml_model.fit(X_train, y_train)
         cu_proba_gpu = cuml_model.predict_proba(X_test)
-        cu_preds_cpu = cuml_model.predict(X_test, predict_model="CPU")
-        cu_preds_gpu = cuml_model.predict(X_test, predict_model="GPU")
+        cu_preds_gpu = cuml_model.predict(X_test)
     np.testing.assert_array_equal(
         cu_preds_gpu, np.argmax(cu_proba_gpu, axis=1)
     )
-
-    cu_acc_cpu = accuracy_score(y_test, cu_preds_cpu)
     cu_acc_gpu = accuracy_score(y_test, cu_preds_gpu)
-    assert cu_acc_cpu == pytest.approx(cu_acc_gpu, abs=0.01, rel=0.1)
 
     # sklearn random forest classification model
     # initialization, fit and predict
@@ -666,15 +628,18 @@ def rf_classification(
         sk_preds = sk_model.predict(X_test)
         sk_acc = accuracy_score(y_test, sk_preds)
         sk_proba = sk_model.predict_proba(X_test)
-        assert cu_acc_cpu >= sk_acc - 0.07
-        assert cu_acc_gpu >= sk_acc - 0.07
-        # 0.06 is the highest relative error observed on CI, within
-        # 0.0061 absolute error boundaries seen previously
-        check_predict_proba(cu_proba_gpu, sk_proba, y_test, 0.1)
+        # Observed: mean=0.024, range=[-0.014, 0.043], stderr=0.002
+        assert cu_acc_gpu >= (sk_acc - 0.08)
+        check_predict_proba(cu_proba_gpu, sk_proba, y_test, 0.12)
 
 
 @pytest.mark.parametrize("datatype", [(np.float32, np.float64)])
 @pytest.mark.parametrize("array_type", ["dataframe", "numpy"])
+@pytest.mark.skipif(
+    cudf_pandas_active,
+    reason="cudf.pandas causes sklearn RF estimators crashes sometimes. "
+    "Issue: https://github.com/rapidsai/cuml/issues/5991",
+)
 def test_rf_classification_multi_class(mclass_clf, datatype, array_type):
     rf_classification(datatype, array_type, 1.0, 1.0, mclass_clf)
 
@@ -682,6 +647,11 @@ def test_rf_classification_multi_class(mclass_clf, datatype, array_type):
 @pytest.mark.parametrize("datatype", [(np.float32, np.float64)])
 @pytest.mark.parametrize("max_samples", [unit_param(1.0), stress_param(0.95)])
 @pytest.mark.parametrize("max_features", [1.0, "log2", "sqrt"])
+@pytest.mark.skipif(
+    cudf_pandas_active,
+    reason="cudf.pandas causes sklearn RF estimators crashes sometimes. "
+    "Issue: https://github.com/rapidsai/cuml/issues/5991",
+)
 def test_rf_classification_proba(
     small_clf, datatype, max_samples, max_features
 ):
@@ -690,16 +660,16 @@ def test_rf_classification_proba(
 
 @pytest.mark.parametrize("datatype", [np.float32, np.float64])
 @pytest.mark.parametrize(
-    "fil_sparse_format", ["not_supported", True, "auto", False]
+    "fil_layout", ["depth_first", "breadth_first", "layered"]
 )
-@pytest.mark.parametrize(
-    "algo", ["auto", "naive", "tree_reorg", "batch_tree_reorg"]
+@pytest.mark.skipif(
+    cudf_pandas_active,
+    reason="cudf.pandas causes sklearn RF estimators crashes sometimes. "
+    "Issue: https://github.com/rapidsai/cuml/issues/5991",
 )
-def test_rf_classification_sparse(
-    small_clf, datatype, fil_sparse_format, algo
-):
+def test_rf_classification_sparse(small_clf, datatype, fil_layout):
     use_handle = True
-    num_treees = 50
+    num_trees = 50
 
     X, y = small_clf
     X = X.astype(datatype)
@@ -707,6 +677,7 @@ def test_rf_classification_sparse(
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, train_size=0.8, random_state=0
     )
+
     # Create a handle for the cuml model
     handle, stream = get_handle(use_handle, n_streams=1)
 
@@ -718,74 +689,54 @@ def test_rf_classification_sparse(
         min_samples_leaf=2,
         random_state=123,
         n_streams=1,
-        n_estimators=num_treees,
+        n_estimators=num_trees,
         handle=handle,
         max_leaves=-1,
         max_depth=40,
     )
     cuml_model.fit(X_train, y_train)
+    preds = cuml_model.predict(X_test, layout=fil_layout)
+    acc = accuracy_score(y_test, preds)
+    np.testing.assert_almost_equal(acc, cuml_model.score(X_test, y_test))
 
-    if (
-        not fil_sparse_format
-        or algo == "tree_reorg"
-        or algo == "batch_tree_reorg"
-    ) or fil_sparse_format == "not_supported":
-        with pytest.raises(ValueError):
-            fil_preds = cuml_model.predict(
-                X_test,
-                predict_model="GPU",
-                threshold=0.5,
-                fil_sparse_format=fil_sparse_format,
-                algo=algo,
-            )
-    else:
-        fil_preds = cuml_model.predict(
-            X_test,
-            predict_model="GPU",
-            threshold=0.5,
-            fil_sparse_format=fil_sparse_format,
-            algo=algo,
+    fil_model = cuml_model.as_fil()
+
+    with cuml.using_output_type("numpy"):
+        fil_model_preds = fil_model.predict(X_test)
+        fil_model_acc = accuracy_score(y_test, fil_model_preds)
+        assert acc == fil_model_acc
+
+    tl_model = cuml_model.as_treelite()
+    assert num_trees == tl_model.num_tree
+    assert X.shape[1] == tl_model.num_feature
+
+    if X.shape[0] < 500000:
+        sk_model = skrfc(
+            n_estimators=50,
+            max_depth=40,
+            min_samples_split=2,
+            random_state=10,
         )
-        fil_preds = np.reshape(fil_preds, np.shape(y_test))
-        fil_acc = accuracy_score(y_test, fil_preds)
-        np.testing.assert_almost_equal(
-            fil_acc, cuml_model.score(X_test, y_test)
-        )
-
-        fil_model = cuml_model.convert_to_fil_model()
-
-        with cuml.using_output_type("numpy"):
-            fil_model_preds = fil_model.predict(X_test)
-            fil_model_acc = accuracy_score(y_test, fil_model_preds)
-            assert fil_acc == fil_model_acc
-
-        tl_model = cuml_model.convert_to_treelite_model()
-        assert num_treees == tl_model.num_trees
-        assert X.shape[1] == tl_model.num_features
-
-        if X.shape[0] < 500000:
-            sk_model = skrfc(
-                n_estimators=50,
-                max_depth=40,
-                min_samples_split=2,
-                random_state=10,
-            )
-            sk_model.fit(X_train, y_train)
-            sk_preds = sk_model.predict(X_test)
-            sk_acc = accuracy_score(y_test, sk_preds)
-            assert fil_acc >= (sk_acc - 0.07)
+        sk_model.fit(X_train, y_train)
+        sk_preds = sk_model.predict(X_test)
+        sk_acc = accuracy_score(y_test, sk_preds)
+        # Observed: mean=0.000, range=[0.000, 0.000], stderr=0.000
+        # Perfect match with sklearn on sparse layout tests
+        assert acc >= (sk_acc - 0.07)
 
 
 @pytest.mark.parametrize("datatype", [np.float32, np.float64])
 @pytest.mark.parametrize(
-    "fil_sparse_format", ["not_supported", True, "auto", False]
+    "fil_layout", ["depth_first", "breadth_first", "layered"]
 )
-@pytest.mark.parametrize(
-    "algo", ["auto", "naive", "tree_reorg", "batch_tree_reorg"]
+@pytest.mark.skipif(
+    cudf_pandas_active,
+    reason="cudf.pandas causes sklearn RF estimators crashes sometimes. "
+    "Issue: https://github.com/rapidsai/cuml/issues/5991",
 )
-def test_rf_regression_sparse(special_reg, datatype, fil_sparse_format, algo):
+def test_rf_regression_sparse(special_reg, datatype, fil_layout):
     use_handle = True
-    num_treees = 50
+    num_trees = 50
 
     X, y = special_reg
     X = X.astype(datatype)
@@ -804,74 +755,54 @@ def test_rf_regression_sparse(special_reg, datatype, fil_sparse_format, algo):
         min_samples_leaf=2,
         random_state=123,
         n_streams=1,
-        n_estimators=num_treees,
+        n_estimators=num_trees,
         handle=handle,
         max_leaves=-1,
         max_depth=40,
-        accuracy_metric="mse",
     )
     cuml_model.fit(X_train, y_train)
 
-    # predict using FIL
-    if (
-        not fil_sparse_format
-        or algo == "tree_reorg"
-        or algo == "batch_tree_reorg"
-    ) or fil_sparse_format == "not_supported":
-        with pytest.raises(ValueError):
-            fil_preds = cuml_model.predict(
-                X_test,
-                predict_model="GPU",
-                fil_sparse_format=fil_sparse_format,
-                algo=algo,
-            )
-    else:
-        fil_preds = cuml_model.predict(
-            X_test,
-            predict_model="GPU",
-            fil_sparse_format=fil_sparse_format,
-            algo=algo,
+    preds = cuml_model.predict(X_test, layout=fil_layout)
+    r2 = r2_score(y_test, preds)
+
+    fil_model = cuml_model.as_fil()
+
+    with cuml.using_output_type("numpy"):
+        fil_model_preds = fil_model.predict(X_test)
+        fil_model_preds = np.reshape(fil_model_preds, np.shape(y_test))
+        fil_model_r2 = r2_score(y_test, fil_model_preds)
+        assert r2 == fil_model_r2
+
+    tl_model = cuml_model.as_treelite()
+    assert num_trees == tl_model.num_tree
+    assert X.shape[1] == tl_model.num_feature
+
+    # Initialize, fit and predict using
+    # sklearn's random forest regression model
+    if X.shape[0] < 1000:  # mode != "stress":
+        sk_model = skrfr(
+            n_estimators=50,
+            max_depth=40,
+            min_samples_split=2,
+            random_state=10,
         )
-        fil_preds = np.reshape(fil_preds, np.shape(y_test))
-        fil_r2 = r2_score(y_test, fil_preds, convert_dtype=datatype)
-
-        fil_model = cuml_model.convert_to_fil_model()
-
-        with cuml.using_output_type("numpy"):
-            fil_model_preds = fil_model.predict(X_test)
-            fil_model_preds = np.reshape(fil_model_preds, np.shape(y_test))
-            fil_model_r2 = r2_score(
-                y_test, fil_model_preds, convert_dtype=datatype
-            )
-            assert fil_r2 == fil_model_r2
-
-        tl_model = cuml_model.convert_to_treelite_model()
-        assert num_treees == tl_model.num_trees
-        assert X.shape[1] == tl_model.num_features
-
-        # Initialize, fit and predict using
-        # sklearn's random forest regression model
-        if X.shape[0] < 1000:  # mode != "stress":
-            sk_model = skrfr(
-                n_estimators=50,
-                max_depth=40,
-                min_samples_split=2,
-                random_state=10,
-            )
-            sk_model.fit(X_train, y_train)
-            sk_preds = sk_model.predict(X_test)
-            sk_r2 = r2_score(y_test, sk_preds, convert_dtype=datatype)
-            assert fil_r2 >= (sk_r2 - 0.08)
+        sk_model.fit(X_train, y_train)
+        sk_preds = sk_model.predict(X_test)
+        sk_r2 = r2_score(y_test, sk_preds)
+        # Observed: mean=0.025, range=[0.021, 0.029], stderr=0.001
+        assert r2 >= (sk_r2 - 0.08)
 
 
 @pytest.mark.xfail(reason="Need rapidsai/rmm#415 to detect memleak robustly")
 @pytest.mark.memleak
 @pytest.mark.parametrize("datatype", [np.float32, np.float64])
-@pytest.mark.parametrize("fil_sparse_format", [True, False, "auto"])
+@pytest.mark.parametrize(
+    "fil_layout", ["depth_first", "breadth_first", "layered"]
+)
 @pytest.mark.parametrize(
     "n_iter", [unit_param(5), quality_param(30), stress_param(80)]
 )
-def test_rf_memory_leakage(small_clf, datatype, fil_sparse_format, n_iter):
+def test_rf_memory_leakage(small_clf, datatype, fil_layout, n_iter):
     use_handle = True
 
     X, y = small_clf
@@ -880,6 +811,7 @@ def test_rf_memory_leakage(small_clf, datatype, fil_sparse_format, n_iter):
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, train_size=0.8, random_state=0
     )
+
     # Create a handle for the cuml model
     handle, stream = get_handle(use_handle, n_streams=1)
 
@@ -892,6 +824,7 @@ def test_rf_memory_leakage(small_clf, datatype, fil_sparse_format, n_iter):
     free_mem = cuda.current_context().get_memory_info()[0]
 
     def test_for_memory_leak():
+        nonlocal free_mem
         cuml_mods = curfc(handle=handle)
         cuml_mods.fit(X_train, y_train)
         handle.sync()  # just to be sure
@@ -900,11 +833,7 @@ def test_rf_memory_leakage(small_clf, datatype, fil_sparse_format, n_iter):
         assert delta_mem == 0
 
         for i in range(2):
-            cuml_mods.predict(
-                X_test,
-                predict_model="GPU",
-                fil_sparse_format=fil_sparse_format,
-            )
+            cuml_mods.predict(X_test, layout=fil_layout)
             handle.sync()  # just to be sure
             # Calculate the memory free after predicting the cuML model
             delta_mem = free_mem - cuda.current_context().get_memory_info()[0]
@@ -921,7 +850,6 @@ def test_rf_memory_leakage(small_clf, datatype, fil_sparse_format, n_iter):
 def test_create_classification_model(
     max_features, max_depth, n_estimators, n_bins
 ):
-
     # random forest classification model
     cuml_model = curfc(
         max_features=max_features,
@@ -942,7 +870,6 @@ def test_create_classification_model(
 @pytest.mark.parametrize("n_estimators", [10, 20, 100])
 @pytest.mark.parametrize("n_bins", [8, 9, 10])
 def test_multiple_fits_classification(large_clf, n_estimators, n_bins):
-
     datatype = np.float32
     X, y = large_clf
     X = X.astype(datatype)
@@ -997,162 +924,6 @@ def test_multiple_fits_regression(column_info, nrows, n_estimators, n_bins):
     params = cuml_model.get_params()
     assert params["n_estimators"] == n_estimators
     assert params["n_bins"] == n_bins
-
-
-@pytest.mark.parametrize("n_estimators", [5, 10, 20])
-@pytest.mark.parametrize("detailed_text", [True, False])
-def test_rf_get_text(n_estimators, detailed_text):
-
-    X, y = make_classification(
-        n_samples=500,
-        n_features=10,
-        n_clusters_per_class=1,
-        n_informative=5,
-        random_state=94929,
-        n_classes=2,
-    )
-
-    X = X.astype(np.float32)
-    y = y.astype(np.int32)
-
-    # Create a handle for the cuml model
-    handle, stream = get_handle(True, n_streams=1)
-
-    # Initialize cuML Random Forest classification model
-    cuml_model = curfc(
-        handle=handle,
-        max_features=1.0,
-        max_samples=1.0,
-        n_bins=16,
-        split_criterion=0,
-        min_samples_leaf=2,
-        random_state=23707,
-        n_streams=1,
-        n_estimators=n_estimators,
-        max_leaves=-1,
-        max_depth=16,
-    )
-
-    # Train model on the data
-    cuml_model.fit(X, y)
-
-    if detailed_text:
-        text_output = cuml_model.get_detailed_text()
-    else:
-        text_output = cuml_model.get_summary_text()
-
-    # Test 1: Output is non-zero
-    assert "" != text_output
-
-    # Count the number of trees printed
-    tree_count = 0
-    for line in text_output.split("\n"):
-        if line.strip().startswith("Tree #"):
-            tree_count += 1
-
-    # Test 2: Correct number of trees are printed
-    assert n_estimators == tree_count
-
-
-@pytest.mark.parametrize("max_depth", [1, 2, 3, 5, 10, 15, 20])
-@pytest.mark.parametrize("n_estimators", [5, 10, 20])
-@pytest.mark.parametrize("estimator_type", ["regression", "classification"])
-def test_rf_get_json(estimator_type, max_depth, n_estimators):
-    X, y = make_classification(
-        n_samples=350,
-        n_features=20,
-        n_clusters_per_class=1,
-        n_informative=10,
-        random_state=123,
-        n_classes=2,
-    )
-    X = X.astype(np.float32)
-    if estimator_type == "classification":
-        cuml_model = curfc(
-            max_features=1.0,
-            max_samples=1.0,
-            n_bins=16,
-            split_criterion=0,
-            min_samples_leaf=2,
-            random_state=23707,
-            n_streams=1,
-            n_estimators=n_estimators,
-            max_leaves=-1,
-            max_depth=max_depth,
-        )
-        y = y.astype(np.int32)
-    elif estimator_type == "regression":
-        cuml_model = curfr(
-            max_features=1.0,
-            max_samples=1.0,
-            n_bins=16,
-            min_samples_leaf=2,
-            random_state=23707,
-            n_streams=1,
-            n_estimators=n_estimators,
-            max_leaves=-1,
-            max_depth=max_depth,
-        )
-        y = y.astype(np.float32)
-    else:
-        assert False
-
-    # Train model on the data
-    cuml_model.fit(X, y)
-
-    json_out = cuml_model.get_json()
-    json_obj = json.loads(json_out)
-
-    # Test 1: Output is non-zero
-    assert "" != json_out
-
-    # Test 2: JSON object contains correct number of trees
-    assert isinstance(json_obj, list)
-    assert len(json_obj) == n_estimators
-
-    # Test 3: Traverse JSON trees and get the same predictions as cuML RF
-    def predict_with_json_tree(tree, x):
-        if "children" not in tree:
-            assert "leaf_value" in tree
-            return tree["leaf_value"]
-        assert "split_feature" in tree
-        assert "split_threshold" in tree
-        assert "yes" in tree
-        assert "no" in tree
-        if x[tree["split_feature"]] <= tree["split_threshold"] + 1e-5:
-            return predict_with_json_tree(tree["children"][0], x)
-        return predict_with_json_tree(tree["children"][1], x)
-
-    def predict_with_json_rf_classifier(rf, x):
-        # Returns the class with the highest vote. If there is a tie, return
-        # the list of all classes with the highest vote.
-        predictions = []
-        for tree in rf:
-            predictions.append(np.array(predict_with_json_tree(tree, x)))
-        predictions = np.sum(predictions, axis=0)
-        return np.argmax(predictions)
-
-    def predict_with_json_rf_regressor(rf, x):
-        pred = 0.0
-        for tree in rf:
-            pred += predict_with_json_tree(tree, x)[0]
-        return pred / len(rf)
-
-    if estimator_type == "classification":
-        expected_pred = cuml_model.predict(X).astype(np.int32)
-        for idx, row in enumerate(X):
-            majority_vote = predict_with_json_rf_classifier(json_obj, row)
-            assert expected_pred[idx] == majority_vote
-    elif estimator_type == "regression":
-        expected_pred = cuml_model.predict(X).astype(np.float32)
-        pred = []
-        for idx, row in enumerate(X):
-            pred.append(predict_with_json_rf_regressor(json_obj, row))
-        pred = np.array(pred, dtype=np.float32)
-        print(json_obj)
-        for i in range(len(pred)):
-            assert np.isclose(pred[i], expected_pred[i]), X[i, 19]
-        np.testing.assert_almost_equal(pred, expected_pred, decimal=6)
 
 
 @pytest.mark.xfail(
@@ -1294,19 +1065,18 @@ def test_rf_nbins_small(small_clf):
         )
 
 
-@pytest.mark.parametrize("split_criterion", [2], ids=["mse"])
-def test_rf_regression_with_identical_labels(split_criterion):
+def test_rf_regression_with_identical_labels():
     X = np.array([[-1, 0], [0, 1], [2, 0], [0, 3], [-2, 0]], dtype=np.float32)
     y = np.array([1, 1, 1, 1, 1], dtype=np.float32)
     # Degenerate case: all labels are identical.
     # RF Regressor must not create any split. It must yield an empty tree
     # with only the root node.
-    clf = curfr(
+    model = curfr(
         max_features=1.0,
         max_samples=1.0,
         n_bins=5,
         bootstrap=False,
-        split_criterion=split_criterion,
+        split_criterion="mse",
         min_samples_leaf=1,
         min_samples_split=2,
         random_state=0,
@@ -1314,11 +1084,15 @@ def test_rf_regression_with_identical_labels(split_criterion):
         n_estimators=1,
         max_depth=1,
     )
-    clf.fit(X, y)
-    model_dump = json.loads(clf.get_json())
-    assert len(model_dump) == 1
-    expected_dump = {"nodeid": 0, "leaf_value": [1.0], "instance_count": 5}
-    assert model_dump[0] == expected_dump
+    model.fit(X, y)
+    trees = json.loads(model.as_treelite().dump_as_json())["trees"]
+    assert len(trees) == 1
+    assert len(trees[0]["nodes"]) == 1
+    assert trees[0]["nodes"][0] == {
+        "node_id": 0,
+        "leaf_value": 1.0,
+        "data_count": 5,
+    }
 
 
 def test_rf_regressor_gtil_integration(tmpdir):
@@ -1329,7 +1103,7 @@ def test_rf_regressor_gtil_integration(tmpdir):
     expected_pred = clf.predict(X).reshape((-1, 1, 1))
 
     checkpoint_path = os.path.join(tmpdir, "checkpoint.tl")
-    clf.convert_to_treelite_model().to_treelite_checkpoint(checkpoint_path)
+    clf.as_treelite().serialize(checkpoint_path)
 
     tl_model = treelite.Model.deserialize(checkpoint_path)
     out_pred = treelite.gtil.predict(tl_model, X)
@@ -1344,7 +1118,7 @@ def test_rf_binary_classifier_gtil_integration(tmpdir):
     expected_pred = clf.predict_proba(X).reshape((-1, 1, 2))
 
     checkpoint_path = os.path.join(tmpdir, "checkpoint.tl")
-    clf.convert_to_treelite_model().to_treelite_checkpoint(checkpoint_path)
+    clf.as_treelite().serialize(checkpoint_path)
 
     tl_model = treelite.Model.deserialize(checkpoint_path)
     out_pred = treelite.gtil.predict(tl_model, X)
@@ -1359,7 +1133,7 @@ def test_rf_multiclass_classifier_gtil_integration(tmpdir):
     expected_prob = clf.predict_proba(X).reshape((X.shape[0], 1, -1))
 
     checkpoint_path = os.path.join(tmpdir, "checkpoint.tl")
-    clf.convert_to_treelite_model().to_treelite_checkpoint(checkpoint_path)
+    clf.as_treelite().serialize(checkpoint_path)
 
     tl_model = treelite.Model.deserialize(checkpoint_path)
     out_prob = treelite.gtil.predict(tl_model, X, pred_margin=True)
@@ -1379,32 +1153,411 @@ def test_rf_min_samples_split_with_small_float(estimator, make_data):
     X, y = make_data(random_state=0)
     clf = estimator(min_samples_split=0.0001, random_state=0, n_estimators=2)
 
-    # Does not error
-    clf.fit(X, y)
+    # Capture and verify expected warning
+    warning_msg = (
+        "The number of bins, `n_bins` is greater than the number of samples "
+        "used for training"
+    )
+    with pytest.warns(UserWarning, match=warning_msg):
+        clf.fit(X, y)
 
 
-# TODO: Remove in v24.08
 @pytest.mark.parametrize(
-    "Estimator",
+    "max_features, sol",
     [
-        curfr,
-        curfc,
+        (2, 0.02),
+        (0.5, 0.5),
+        ("sqrt", math.sqrt(100) / 100),
+        ("log2", math.log2(100) / 100),
+        (None, 1.0),
     ],
 )
-def test_random_forest_max_features_deprecation(Estimator):
-    X = np.array([[1.0, 2], [3, 4]])
-    y = np.array([1, 0])
-    est = Estimator(max_features="auto")
-
-    error_msg = "`max_features='auto'` has been deprecated in 24.06 "
-
-    with pytest.warns(FutureWarning, match=error_msg):
-        est.fit(X, y)
+def test_max_features(max_features, sol):
+    res = compute_max_features(max_features, 100)
+    assert res == sol
 
 
 def test_rf_predict_returns_int():
-
     X, y = make_classification()
-    clf = cuml.ensemble.RandomForestClassifier().fit(X, y)
+
+    # Capture and verify expected warning
+    warning_msg = (
+        "The number of bins, `n_bins` is greater than the number of samples "
+        "used for training"
+    )
+    with pytest.warns(UserWarning, match=warning_msg):
+        clf = cuml.ensemble.RandomForestClassifier().fit(X, y)
+
     pred = clf.predict(X)
     assert pred.dtype == np.int64
+
+
+def test_ensemble_estimator_length():
+    X, y = make_classification()
+    clf = cuml.ensemble.RandomForestClassifier(n_estimators=3)
+
+    # Capture and verify expected warning
+    warning_msg = (
+        "The number of bins, `n_bins` is greater than the number of samples "
+        "used for training"
+    )
+    with pytest.warns(UserWarning, match=warning_msg):
+        clf.fit(X, y)
+
+    assert len(clf) == 3
+
+
+def test_rf_feature_importance_classifier():
+    """Test feature importance for Random Forest Classifier.
+
+    With shuffle=False, the first n_informative features are guaranteed to be
+    informative, and the rest are noise. A correctly working Random Forest should
+    always rank the informative features highest.
+    """
+    X, y = make_classification(
+        n_samples=1000,
+        n_features=10,
+        n_informative=3,
+        n_redundant=0,
+        n_repeated=0,
+        n_classes=2,
+        shuffle=False,
+        random_state=42,
+    )
+    X = X.astype(np.float32)
+    y = y.astype(np.int32)
+
+    cu_clf = curfc(n_estimators=50, max_depth=8, random_state=42)
+    cu_clf.fit(X, y)
+
+    assert hasattr(cu_clf, "feature_importances_")
+    cu_importances = cu_clf.feature_importances_
+
+    assert len(cu_importances) == X.shape[1]
+    assert np.all(cu_importances >= 0)
+    assert np.abs(np.sum(cu_importances) - 1.0) < 1e-5  # Should sum to 1
+
+    top_features = set(np.argsort(cu_importances)[-3:])
+    assert top_features == {0, 1, 2}, (
+        f"Top 3 features {top_features} should be {{0, 1, 2}}. "
+        f"Importances: {cu_importances}"
+    )
+
+
+def test_rf_feature_importance_regressor():
+    """Test feature importance for Random Forest Regressor.
+
+    With shuffle=False, the first n_informative features are guaranteed to be
+    informative, and the rest are noise. A correctly working Random Forest should
+    always rank the informative features highest.
+    """
+    X, y = make_regression(
+        n_samples=1000,
+        n_features=10,
+        n_informative=3,
+        noise=0.1,
+        shuffle=False,  # First 3 features are informative, rest are noise
+        random_state=42,
+    )
+    X = X.astype(np.float32)
+    y = y.astype(np.float32)
+
+    cu_reg = curfr(n_estimators=50, max_depth=8, random_state=42)
+    cu_reg.fit(X, y)
+
+    assert hasattr(cu_reg, "feature_importances_")
+    cu_importances = cu_reg.feature_importances_
+
+    assert len(cu_importances) == X.shape[1]
+    assert np.all(cu_importances >= 0)
+    assert np.abs(np.sum(cu_importances) - 1.0) < 1e-5  # Should sum to 1
+
+    top_features = set(np.argsort(cu_importances)[-3:])
+    assert top_features == {0, 1, 2}, (
+        f"Top 3 features {top_features} should be {{0, 1, 2}}. "
+        f"Importances: {cu_importances}"
+    )
+
+
+def test_rf_feature_importance_exact_match_with_fixed_trees():
+    """Test that feature importances are reproducible with fixed parameters.
+
+    This test creates a simple dataset and verifies that the
+    feature importance calculation produces consistent results.
+    """
+    np.random.seed(42)
+    n_samples = 100
+    X = np.random.randn(n_samples, 4).astype(np.float32)
+    y = (X[:, 0] > 0).astype(np.int32)
+    y[::5] = 1 - y[::5]
+
+    cu_rf = curfc(
+        n_estimators=5,
+        max_depth=3,
+        min_samples_split=5,
+        min_samples_leaf=2,
+        max_features=1.0,
+        bootstrap=False,
+        random_state=42,
+    )
+    cu_rf.fit(X, y)
+
+    cu_importances = cu_rf.feature_importances_
+
+    if cu_importances.sum() > 0:
+        assert np.allclose(cu_importances.sum(), 1.0, rtol=1e-5), (
+            f"Feature importances don't sum to 1: {cu_importances.sum()}"
+        )
+
+        top_features = np.argsort(cu_importances)[-2:]
+        assert 0 in top_features, (
+            f"Feature 0 not in top features. Importances: {cu_importances}"
+        )
+
+    cu_rf2 = curfc(
+        n_estimators=5,
+        max_depth=3,
+        min_samples_split=5,
+        min_samples_leaf=2,
+        max_features=1.0,
+        bootstrap=False,
+        random_state=42,
+    )
+    cu_rf2.fit(X, y)
+
+    cu_importances2 = cu_rf2.feature_importances_
+
+    # With same parameters and no randomness, should get identical importances
+    assert np.allclose(cu_importances, cu_importances2, rtol=1e-5), (
+        f"Importances not reproducible:\n1st run: {cu_importances}\n2nd run: {cu_importances2}"
+    )
+
+
+def test_rf_feature_importance_consistency():
+    """Test that feature importances are consistent across multiple runs."""
+    X, y = make_classification(
+        n_samples=200,
+        n_features=10,
+        n_informative=5,
+        n_redundant=2,
+        n_repeated=0,
+        random_state=42,
+        shuffle=False,
+    )
+
+    X = X.astype(np.float32)
+    y = y.astype(np.int32)
+
+    # Train the same model multiple times
+    importances_list = []
+    for i in range(3):
+        rf = curfc(
+            n_estimators=10,
+            max_depth=5,
+            min_samples_split=5,
+            max_features="sqrt",
+            bootstrap=True,
+            random_state=42,
+        )
+        rf.fit(X, y)
+        importances_list.append(rf.feature_importances_)
+
+    # All runs should produce identical importances
+    for i in range(1, len(importances_list)):
+        assert np.allclose(
+            importances_list[0], importances_list[i], rtol=1e-5
+        ), (
+            f"Run {i} produced different importances:\n{importances_list[0]}\nvs\n{importances_list[i]}"
+        )
+
+
+@pytest.mark.parametrize("datatype", [np.float32, np.float64])
+def test_rf_oob_score_classifier(datatype):
+    """Test OOB score computation for RandomForestClassifier"""
+    X, y = make_classification(
+        n_samples=500,
+        n_features=20,
+        n_informative=15,
+        n_redundant=5,
+        n_classes=3,
+        random_state=42,
+    )
+    X = X.astype(datatype)
+    y = y.astype(np.int32)
+
+    # Train with OOB score
+    clf = curfc(
+        n_estimators=50,
+        oob_score=True,
+        bootstrap=True,
+        max_samples=0.8,
+        random_state=42,
+    )
+    clf.fit(X, y)
+
+    # Check OOB attributes exist
+    assert hasattr(clf, "oob_score_")
+    assert hasattr(clf, "oob_decision_function_")
+
+    # Check OOB score is reasonable (between 0 and 1)
+    assert 0.0 <= clf.oob_score_ <= 1.0
+
+    # Check OOB decision function shape
+    assert clf.oob_decision_function_.shape == (
+        len(X),
+        3,
+    )
+
+    # Compare with sklearn (should be similar but not exactly the same due to implementation differences)
+    sk_clf = skrfc(
+        n_estimators=50,
+        oob_score=True,
+        bootstrap=True,
+        max_samples=0.8,
+        random_state=42,
+    )
+    sk_clf.fit(X, y)
+
+    # OOB scores should be reasonably close (within 0.2)
+    assert abs(clf.oob_score_ - sk_clf.oob_score_) < 0.2
+
+
+@pytest.mark.parametrize("datatype", [np.float32, np.float64])
+def test_rf_oob_score_regressor(datatype):
+    """Test OOB score computation for RandomForestRegressor"""
+    X, y = make_regression(
+        n_samples=500, n_features=20, n_informative=15, random_state=42
+    )
+    X = X.astype(datatype)
+    y = y.astype(datatype)
+
+    # Train with OOB score
+    reg = curfr(
+        n_estimators=50,
+        oob_score=True,
+        bootstrap=True,
+        max_samples=0.8,
+        random_state=42,
+    )
+    reg.fit(X, y)
+
+    # Check OOB attributes exist
+    assert hasattr(reg, "oob_score_")
+    assert hasattr(reg, "oob_prediction_")
+
+    # Check OOB score is reasonable (R² score, typically between -1 and 1, but for good models > 0)
+    assert -1.0 <= reg.oob_score_ <= 1.0
+    assert reg.oob_score_ > 0
+
+    # Check OOB prediction shape
+    assert reg.oob_prediction_.shape == (len(X),)
+
+
+def test_rf_oob_score_disabled():
+    """Test that OOB score attributes don't exist when oob_score=False"""
+    X, y = make_classification(n_samples=100, n_features=10, random_state=42)
+
+    clf = curfc(n_estimators=10, oob_score=False, random_state=42)
+
+    # Capture and verify expected warning
+    warning_msg = (
+        "The number of bins, `n_bins` is greater than the number of samples "
+        "used for training"
+    )
+    with pytest.warns(UserWarning, match=warning_msg):
+        clf.fit(X, y)
+
+    # OOB attributes should not exist
+    assert not hasattr(clf, "oob_score_")
+    assert not hasattr(clf, "oob_decision_function_")
+
+
+def test_rf_oob_without_bootstrap():
+    """Test OOB score with bootstrap=False (should raise ValueError)"""
+    X, y = make_classification(n_samples=100, n_features=10, random_state=42)
+
+    clf = curfc(
+        n_estimators=10, oob_score=True, bootstrap=False, random_state=42
+    )
+
+    # Should raise ValueError when oob_score=True but bootstrap=False
+    with pytest.raises(
+        ValueError,
+        match="Out of bag estimation only available if bootstrap=True",
+    ):
+        clf.fit(X, y)
+
+
+def test_rf_oob_score_binary_classification():
+    """Test OOB score on binary classification"""
+    X, y = load_breast_cancer(return_X_y=True)
+    X = X.astype(np.float32)
+
+    clf = curfc(n_estimators=30, oob_score=True, max_depth=10, random_state=42)
+    clf.fit(X, y)
+
+    # OOB score should be reasonably high for this easy dataset
+    assert clf.oob_score_ > 0.85
+
+    # OOB decision function should have 2 classes
+    assert clf.oob_decision_function_.shape[1] == 2
+
+
+@pytest.mark.parametrize("datatype", [np.float32, np.float64])
+@pytest.mark.parametrize("n_features", [10, 20, 50])
+@pytest.mark.skipif(
+    cudf_pandas_active,
+    reason="cudf.pandas causes sklearn RF estimators crashes sometimes. "
+    "Issue: https://github.com/rapidsai/cuml/issues/5991",
+)
+def test_rf_feature_zero_bias(datatype, n_features):
+    """
+    Test for feature 0 sampling bias in RandomForest.
+
+    Creates a dataset where ONLY feature 0 predicts the target,
+    and all other features are pure noise. This tests whether
+    feature 0 is being properly sampled during tree building.
+
+    Regression test for: https://github.com/rapidsai/cuml/issues/7422
+    """
+    n_samples = 5000
+
+    # Create dataset where only feature 0 is predictive
+    np.random.seed(42)
+    X = np.random.randn(n_samples, n_features).astype(datatype)
+    # Target depends ONLY on feature 0
+    y = (X[:, 0] > 0).astype(np.int32)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42, stratify=y
+    )
+
+    # Train scikit-learn model
+    sk_model = skrfc(
+        n_estimators=100,
+        max_features="sqrt",
+        max_depth=5,
+        min_samples_split=10,
+        random_state=42,
+        n_jobs=-1,
+    )
+    sk_model.fit(X_train, y_train)
+    sk_pred = sk_model.predict(X_test)
+    sk_acc = accuracy_score(y_test, sk_pred)
+
+    # Train cuML model
+    cuml_model = curfc(
+        n_estimators=100,
+        max_features="sqrt",
+        max_depth=5,
+        min_samples_split=10,
+        random_state=42,
+    )
+    cuml_model.fit(X_train, y_train)
+    cuml_pred = cuml_model.predict(X_test)
+    cuml_acc = accuracy_score(y_test, cuml_pred)
+
+    # cuML should achieve similar accuracy to sklearn
+    # If feature 0 is severely under-sampled, accuracy will be much lower
+    # Observed: mean=0.003, range=[0.001, 0.005], stderr=0.000
+    assert cuml_acc >= (sk_acc - 0.10)

@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2018-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -20,12 +9,14 @@
 #include "pack.h"
 #include "precomputed.cuh"
 
+#include <cuml/common/distance_type.hpp>
+
 namespace ML {
 namespace Dbscan {
 namespace VertexDeg {
 template <typename Type_f, typename Index_ = int>
 void run(const raft::handle_t& handle,
-         raft::neighbors::ball_cover::BallCoverIndex<Index_, Type_f, Index_, Index_>* rbc_index,
+         void* rbc_index,
          Index_* ia,
          rmm::device_uvector<Index_>* ja,
          Index_ max_k,
@@ -41,7 +32,7 @@ void run(const raft::handle_t& handle,
          Index_ start_vertex_id,
          Index_ batch_size,
          cudaStream_t stream,
-         raft::distance::DistanceType metric)
+         ML::distance::DistanceType metric)
 {
   Pack<Type_f, Index_> data = {
     rbc_index, vd, wght_sum, ia, ja, max_k, adj, x, sample_weight, eps, N, D};

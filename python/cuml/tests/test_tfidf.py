@@ -1,28 +1,14 @@
-# Copyright (c) 2019-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from sklearn.feature_extraction.text import TfidfTransformer as SkTfidfTransfo
-from cuml.feature_extraction.text import TfidfTransformer
-from cuml.internals.safe_imports import gpu_only_import
+import cupy as cp
+import cupyx
+import numpy as np
 import pytest
-from cuml.internals.safe_imports import cpu_only_import
+from sklearn.feature_extraction.text import TfidfTransformer as SkTfidfTransfo
 
-np = cpu_only_import("numpy")
-cp = gpu_only_import("cupy")
-cupyx = gpu_only_import("cupyx")
-
+from cuml.feature_extraction.text import TfidfTransformer
 
 # data_ids correspond to data, order is important
 data_ids = ["base_case", "diag", "empty_feature", "123", "empty_doc"]
@@ -48,7 +34,7 @@ data = [
 @pytest.mark.parametrize("smooth_idf", [True, False])
 @pytest.mark.parametrize("sublinear_tf", [True, False])
 @pytest.mark.filterwarnings(
-    "ignore:divide by zero(.*):RuntimeWarning:" "sklearn[.*]"
+    "ignore:divide by zero(.*):RuntimeWarning:sklearn[.*]"
 )
 def test_tfidf_transformer(data, norm, use_idf, smooth_idf, sublinear_tf):
     data_gpu = cp.array(data)

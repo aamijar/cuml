@@ -1,11 +1,6 @@
-# Copyright (c) 2020-2024, NVIDIA CORPORATION.
-
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 import pytest
-
-from dask_cuda import initialize
-from dask_cuda import LocalCUDACluster
-from dask_cuda.utils_test import IncreasedCloseTimeoutNanny
-from dask.distributed import Client
 
 enable_tcp_over_ucx = True
 enable_nvlink = False
@@ -14,6 +9,8 @@ enable_infiniband = False
 
 @pytest.fixture(scope="module")
 def cluster():
+    from dask_cuda import LocalCUDACluster
+    from dask_cuda.utils_test import IncreasedCloseTimeoutNanny
 
     cluster = LocalCUDACluster(
         protocol="tcp",
@@ -26,6 +23,7 @@ def cluster():
 
 @pytest.fixture(scope="function")
 def client(cluster):
+    from dask.distributed import Client
 
     client = Client(cluster)
     yield client
@@ -34,25 +32,11 @@ def client(cluster):
 
 @pytest.fixture(scope="module")
 def ucx_cluster():
+    from dask_cuda import LocalCUDACluster
+    from dask_cuda.utils_test import IncreasedCloseTimeoutNanny
+
     cluster = LocalCUDACluster(
         protocol="ucx",
-    )
-    yield cluster
-    cluster.close()
-
-
-@pytest.fixture(scope="function")
-def ucx_client(ucx_cluster):
-
-    client = Client(ucx_cluster)
-    yield client
-    client.close()
-
-
-@pytest.fixture(scope="module")
-def ucxx_cluster():
-    cluster = LocalCUDACluster(
-        protocol="ucxx",
         worker_class=IncreasedCloseTimeoutNanny,
     )
     yield cluster
@@ -60,10 +44,11 @@ def ucxx_cluster():
 
 
 @pytest.fixture(scope="function")
-def ucxx_client(ucxx_cluster):
+def ucx_client(ucx_cluster):
     pytest.importorskip("distributed_ucxx")
+    from dask.distributed import Client
 
-    client = Client(ucxx_cluster)
+    client = Client(ucx_cluster)
     yield client
     client.close()
 
@@ -72,11 +57,10 @@ def pytest_addoption(parser):
     group = parser.getgroup("Dask cuML Custom Options")
 
     group.addoption(
-        "--run_ucx", action="store_true", help="run _only_ UCX-Py tests"
-    )
-
-    group.addoption(
-        "--run_ucxx", action="store_true", help="run _only_ UCXX tests"
+        "--run_ucx",
+        action="store_true",
+        default=False,
+        help="run _only_ UCXX tests",
     )
 
 
@@ -93,16 +77,3 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "ucx" in item.keywords:
                 item.add_marker(skip_ucx)
-
-    if config.getoption("--run_ucxx"):
-        skip_others = pytest.mark.skip(
-            reason="only runs when --run_ucxx is not specified"
-        )
-        for item in items:
-            if "ucxx" not in item.keywords:
-                item.add_marker(skip_others)
-    else:
-        skip_ucxx = pytest.mark.skip(reason="requires --run_ucxx to run")
-        for item in items:
-            if "ucxx" in item.keywords:
-                item.add_marker(skip_ucxx)

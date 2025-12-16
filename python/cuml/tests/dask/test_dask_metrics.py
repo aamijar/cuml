@@ -1,30 +1,17 @@
 #
-# Copyright (c) 2019-2023, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-import dask.array as da
-from cuml.dask.metrics import confusion_matrix
-from cuml.testing.utils import stress_param, generate_random_labels
-from sklearn.metrics import confusion_matrix as sk_confusion_matrix
-import pytest
-from cuml.internals.safe_imports import gpu_only_import
 from itertools import chain, permutations
 
-from cuml.internals.safe_imports import cpu_only_import
+import cupy as cp
+import dask.array as da
+import numpy as np
+import pytest
+from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 
-np = cpu_only_import("numpy")
-cp = gpu_only_import("cupy")
+from cuml.dask.metrics import confusion_matrix
+from cuml.testing.utils import generate_random_labels, stress_param
 
 
 @pytest.mark.mg

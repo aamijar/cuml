@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2018-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -26,6 +15,7 @@
 #include <common/nvtx.hpp>
 
 #include <cuml/cluster/dbscan.hpp>
+#include <cuml/common/distance_type.hpp>
 #include <cuml/common/logger.hpp>
 #include <cuml/common/utils.hpp>
 
@@ -34,10 +24,13 @@
 #include <raft/sparse/csr.hpp>
 #include <raft/util/cudart_utils.hpp>
 
+#include <cuda/functional>
 #include <thrust/copy.h>
 #include <thrust/device_ptr.h>
 #include <thrust/fill.h>
 #include <thrust/iterator/counting_iterator.h>
+
+#include <cuvs/neighbors/ball_cover.hpp>
 
 #include <cstddef>
 
@@ -121,7 +114,7 @@ std::size_t run(const raft::handle_t& handle,
                 std::size_t batch_size,
                 EpsNnMethod eps_nn_method,
                 cudaStream_t stream,
-                raft::distance::DistanceType metric)
+                ML::distance::DistanceType metric)
 {
   const std::size_t align = 256;
   Index_ n_batches        = raft::ceildiv((std::size_t)n_owned_rows, batch_size);
@@ -136,8 +129,17 @@ std::size_t run(const raft::handle_t& handle,
   // switch compute mode based on feature dimension
   bool sparse_rbc_mode = eps_nn_method == EpsNnMethod::RBC;
 
-  if (sparse_rbc_mode && metric != raft::distance::DistanceType::L2SqrtExpanded &&
-      metric != raft::distance::DistanceType::L2SqrtUnexpanded) {
+  if constexpr (std::is_same_v<Type_f, double> || std::is_same_v<Index_, int32_t>) {
+    if (sparse_rbc_mode) {
+      sparse_rbc_mode = false;
+      CUML_LOG_WARN(
+        "RBC does not support double precision or int32 labels. Falling back to BRUTE_FORCE "
+        "strategy.");
+    }
+  }
+
+  if (sparse_rbc_mode && metric != ML::distance::DistanceType::L2SqrtExpanded &&
+      metric != ML::distance::DistanceType::L2SqrtUnexpanded) {
     CUML_LOG_WARN("Metric not supported by RBC yet. Falling back to BRUTE_FORCE strategy.");
     sparse_rbc_mode = false;
   }
@@ -217,14 +219,15 @@ std::size_t run(const raft::handle_t& handle,
   rmm::device_uvector<Index_> adj_graph(0, stream);
 
   // build index for rbc
-  raft::neighbors::ball_cover::BallCoverIndex<Index_, Type_f, Index_, Index_>* rbc_index_ptr =
-    nullptr;
-  raft::neighbors::ball_cover::BallCoverIndex<Index_, Type_f, Index_, Index_> rbc_index(
-    handle, x, sparse_rbc_mode ? N : 0, sparse_rbc_mode ? D : 0, metric);
-
+  void* rbc_index_ptr = nullptr;
   if (sparse_rbc_mode) {
-    raft::neighbors::ball_cover::build_index(handle, rbc_index);
-    rbc_index_ptr = &rbc_index;
+    if constexpr (std::is_same_v<Type_f, float> && std::is_same_v<Index_, int64_t>) {
+      auto x_view = raft::make_device_matrix_view<const float, int64_t, raft::row_major>(x, N, D);
+      auto rbc_index = new cuvs::neighbors::ball_cover::index<Index_, Type_f>(
+        handle, x_view, static_cast<cuvs::distance::DistanceType>(metric));
+      cuvs::neighbors::ball_cover::build(handle, *rbc_index);
+      rbc_index_ptr = rbc_index;
+    }
   }
 
   // Compute the mask
@@ -272,8 +275,8 @@ std::size_t run(const raft::handle_t& handle,
     // check for maximum row-length (number of connections) in batch
     // if sufficiently small we can compute neighbors in one pass later
     if (sparse_rbc_mode) {
-      Index_ max_k = thrust::reduce(
-        handle.get_thrust_policy(), vd, vd + n_points, (Index_)0, thrust::maximum<Index_>());
+      Index_ max_k =
+        thrust::reduce(handle.get_thrust_policy(), vd, vd + n_points, (Index_)0, cuda::maximum{});
       CUML_LOG_DEBUG(
         "Adjacency matrix (batch %d) maximum row length %ld.", i, (unsigned long)max_k);
       maxklen.at(i) = max_k;

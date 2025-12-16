@@ -1,115 +1,92 @@
-# Copyright (c) 2020-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from cuml.internals.safe_imports import gpu_only_import
+import cupy as cp
+import cupyx as cpx
+import numpy as np
 import pytest
+import scipy
 import sklearn
+from packaging.version import Version
+from sklearn.impute import MissingIndicator as skMissingIndicator
+from sklearn.impute import SimpleImputer as skSimpleImputer
+from sklearn.preprocessing import Binarizer as skBinarizer
+from sklearn.preprocessing import FunctionTransformer as skFunctionTransformer
+from sklearn.preprocessing import KBinsDiscretizer as skKBinsDiscretizer
+from sklearn.preprocessing import KernelCenterer as skKernelCenterer
+from sklearn.preprocessing import MaxAbsScaler as skMaxAbsScaler
+from sklearn.preprocessing import MinMaxScaler as skMinMaxScaler
+from sklearn.preprocessing import Normalizer as skNormalizer
+from sklearn.preprocessing import PolynomialFeatures as skPolynomialFeatures
+from sklearn.preprocessing import PowerTransformer as skPowerTransformer
+from sklearn.preprocessing import QuantileTransformer as skQuantileTransformer
+from sklearn.preprocessing import RobustScaler as skRobustScaler
+from sklearn.preprocessing import StandardScaler as skStandardScaler
+from sklearn.preprocessing import add_dummy_feature as sk_add_dummy_feature
+from sklearn.preprocessing import binarize as sk_binarize
+from sklearn.preprocessing import label_binarize as sk_label_binarize
+from sklearn.preprocessing import maxabs_scale as sk_maxabs_scale
+from sklearn.preprocessing import minmax_scale as sk_minmax_scale
+from sklearn.preprocessing import normalize as sk_normalize
+from sklearn.preprocessing import power_transform as sk_power_transform
+from sklearn.preprocessing import quantile_transform as sk_quantile_transform
+from sklearn.preprocessing import robust_scale as sk_robust_scale
+from sklearn.preprocessing import scale as sk_scale
 
-from cuml.preprocessing import (
-    Binarizer as cuBinarizer,
-    FunctionTransformer as cuFunctionTransformer,
-    KBinsDiscretizer as cuKBinsDiscretizer,
-    KernelCenterer as cuKernelCenterer,
-    MaxAbsScaler as cuMaxAbsScaler,
-    MinMaxScaler as cuMinMaxScaler,
-    MissingIndicator as cuMissingIndicator,
-    Normalizer as cuNormalizer,
-    PolynomialFeatures as cuPolynomialFeatures,
-    PowerTransformer as cuPowerTransformer,
-    QuantileTransformer as cuQuantileTransformer,
-    RobustScaler as cuRobustScaler,
-    SimpleImputer as cuSimpleImputer,
-    StandardScaler as cuStandardScaler,
-)
-from cuml.preprocessing import (
-    add_dummy_feature as cu_add_dummy_feature,
-    binarize as cu_binarize,
-    maxabs_scale as cu_maxabs_scale,
-    minmax_scale as cu_minmax_scale,
-    normalize as cu_normalize,
-    power_transform as cu_power_transform,
-    quantile_transform as cu_quantile_transform,
-    robust_scale as cu_robust_scale,
-    scale as cu_scale,
-    label_binarize as cu_label_binarize,
-)
-from sklearn.preprocessing import (
-    Binarizer as skBinarizer,
-    FunctionTransformer as skFunctionTransformer,
-    KBinsDiscretizer as skKBinsDiscretizer,
-    KernelCenterer as skKernelCenterer,
-    MaxAbsScaler as skMaxAbsScaler,
-    MinMaxScaler as skMinMaxScaler,
-    Normalizer as skNormalizer,
-    PolynomialFeatures as skPolynomialFeatures,
-    PowerTransformer as skPowerTransformer,
-    QuantileTransformer as skQuantileTransformer,
-    RobustScaler as skRobustScaler,
-    StandardScaler as skStandardScaler,
-)
-from sklearn.preprocessing import (
-    add_dummy_feature as sk_add_dummy_feature,
-    binarize as sk_binarize,
-    maxabs_scale as sk_maxabs_scale,
-    minmax_scale as sk_minmax_scale,
-    normalize as sk_normalize,
-    power_transform as sk_power_transform,
-    quantile_transform as sk_quantile_transform,
-    robust_scale as sk_robust_scale,
-    scale as sk_scale,
-    label_binarize as sk_label_binarize,
-)
-from sklearn.impute import (
-    MissingIndicator as skMissingIndicator,
-    SimpleImputer as skSimpleImputer,
-)
-
-from cuml.testing.test_preproc_utils import (
+from cuml.metrics import pairwise_kernels
+from cuml.preprocessing import Binarizer as cuBinarizer
+from cuml.preprocessing import FunctionTransformer as cuFunctionTransformer
+from cuml.preprocessing import KBinsDiscretizer as cuKBinsDiscretizer
+from cuml.preprocessing import KernelCenterer as cuKernelCenterer
+from cuml.preprocessing import MaxAbsScaler as cuMaxAbsScaler
+from cuml.preprocessing import MinMaxScaler as cuMinMaxScaler
+from cuml.preprocessing import MissingIndicator as cuMissingIndicator
+from cuml.preprocessing import Normalizer as cuNormalizer
+from cuml.preprocessing import PolynomialFeatures as cuPolynomialFeatures
+from cuml.preprocessing import PowerTransformer as cuPowerTransformer
+from cuml.preprocessing import QuantileTransformer as cuQuantileTransformer
+from cuml.preprocessing import RobustScaler as cuRobustScaler
+from cuml.preprocessing import SimpleImputer as cuSimpleImputer
+from cuml.preprocessing import StandardScaler as cuStandardScaler
+from cuml.preprocessing import add_dummy_feature as cu_add_dummy_feature
+from cuml.preprocessing import binarize as cu_binarize
+from cuml.preprocessing import label_binarize as cu_label_binarize
+from cuml.preprocessing import maxabs_scale as cu_maxabs_scale
+from cuml.preprocessing import minmax_scale as cu_minmax_scale
+from cuml.preprocessing import normalize as cu_normalize
+from cuml.preprocessing import power_transform as cu_power_transform
+from cuml.preprocessing import quantile_transform as cu_quantile_transform
+from cuml.preprocessing import robust_scale as cu_robust_scale
+from cuml.preprocessing import scale as cu_scale
+from cuml.testing.test_preproc_utils import (  # noqa: F401
+    assert_allclose,
+    blobs_dataset,
     clf_dataset,
     int_dataset,
-    blobs_dataset,
     nan_filled_positive,
-    sparse_nan_filled_positive,
-    sparse_clf_dataset,
     sparse_blobs_dataset,
-    sparse_int_dataset,
-    sparse_imputer_dataset,
+    sparse_clf_dataset,
     sparse_dataset_with_coo,
-)  # noqa: F401
-from cuml.testing.test_preproc_utils import assert_allclose
-from cuml.metrics import pairwise_kernels
-
-from cuml.internals.safe_imports import cpu_only_import
-
-np = cpu_only_import("numpy")
-cp = gpu_only_import("cupy")
-cpx = gpu_only_import("cupyx")
-scipy = cpu_only_import("scipy")
+    sparse_imputer_dataset,
+    sparse_int_dataset,
+    sparse_nan_filled_positive,
+)
 
 
 @pytest.mark.parametrize("feature_range", [(0, 1), (0.1, 0.8)])
 def test_minmax_scaler(
-    failure_logger, clf_dataset, feature_range  # noqa: F811
+    failure_logger,
+    clf_dataset,
+    feature_range,  # noqa: F811
 ):
     X_np, X = clf_dataset
 
     scaler = cuMinMaxScaler(feature_range=feature_range, copy=True)
     t_X = scaler.fit_transform(X)
     r_X = scaler.inverse_transform(t_X)
-    assert type(t_X) == type(X)
-    assert type(r_X) == type(t_X)
+    assert type(t_X) is type(X)
+    assert type(r_X) is type(t_X)
 
     scaler = skMinMaxScaler(feature_range=feature_range, copy=True)
     sk_t_X = scaler.fit_transform(X_np)
@@ -122,12 +99,15 @@ def test_minmax_scaler(
 @pytest.mark.parametrize("axis", [0, 1])
 @pytest.mark.parametrize("feature_range", [(0, 1), (0.1, 0.8)])
 def test_minmax_scale(
-    failure_logger, clf_dataset, axis, feature_range  # noqa: F811
+    failure_logger,
+    clf_dataset,
+    axis,
+    feature_range,  # noqa: F811
 ):
     X_np, X = clf_dataset
 
     t_X = cu_minmax_scale(X, feature_range=feature_range, axis=axis)
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     sk_t_X = sk_minmax_scale(X_np, feature_range=feature_range, axis=axis)
 
@@ -137,7 +117,10 @@ def test_minmax_scale(
 @pytest.mark.parametrize("with_mean", [True, False])
 @pytest.mark.parametrize("with_std", [True, False])
 def test_standard_scaler(
-    failure_logger, clf_dataset, with_mean, with_std  # noqa: F811
+    failure_logger,
+    clf_dataset,
+    with_mean,
+    with_std,  # noqa: F811
 ):
     X_np, X = clf_dataset
 
@@ -146,8 +129,8 @@ def test_standard_scaler(
     )
     t_X = scaler.fit_transform(X)
     r_X = scaler.inverse_transform(t_X)
-    assert type(t_X) == type(X)
-    assert type(r_X) == type(t_X)
+    assert type(t_X) is type(X)
+    assert type(r_X) is type(t_X)
 
     scaler = skStandardScaler(
         with_mean=with_mean, with_std=with_std, copy=True
@@ -161,15 +144,17 @@ def test_standard_scaler(
 
 @pytest.mark.parametrize("with_std", [True, False])
 def test_standard_scaler_sparse(
-    failure_logger, sparse_clf_dataset, with_std  # noqa: F811
+    failure_logger,
+    sparse_clf_dataset,
+    with_std,  # noqa: F811
 ):
     X_np, X = sparse_clf_dataset
 
     scaler = cuStandardScaler(with_mean=False, with_std=with_std, copy=True)
     t_X = scaler.fit_transform(X)
     r_X = scaler.inverse_transform(t_X)
-    #  assert type(t_X) == type(X)
-    #  assert type(r_X) == type(t_X)
+    #  assert type(t_X) is type(X)
+    #  assert type(r_X) is type(t_X)
     if cpx.scipy.sparse.issparse(X):
         assert cpx.scipy.sparse.issparse(t_X)
     if scipy.sparse.issparse(X):
@@ -178,6 +163,8 @@ def test_standard_scaler_sparse(
         assert cpx.scipy.sparse.issparse(r_X)
     if scipy.sparse.issparse(t_X):
         assert scipy.sparse.issparse(r_X)
+
+    assert scaler.n_samples_seen_ == X.shape[0]
 
     scaler = skStandardScaler(copy=True, with_mean=False, with_std=with_std)
     sk_t_X = scaler.fit_transform(X_np)
@@ -195,14 +182,18 @@ def test_standard_scaler_sparse(
 # For more information see : https://github.com/rapidsai/cuml/issues/4203
 @pytest.mark.filterwarnings("ignore:Numerical issues::")
 def test_scale(
-    failure_logger, clf_dataset, axis, with_mean, with_std  # noqa: F811
+    failure_logger,
+    clf_dataset,
+    axis,
+    with_mean,
+    with_std,  # noqa: F811
 ):
     X_np, X = clf_dataset
 
     t_X = cu_scale(
         X, axis=axis, with_mean=with_mean, with_std=with_std, copy=True
     )
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     sk_t_X = sk_scale(
         X_np, axis=axis, with_mean=with_mean, with_std=with_std, copy=True
@@ -213,12 +204,14 @@ def test_scale(
 
 @pytest.mark.parametrize("with_std", [True, False])
 def test_scale_sparse(
-    failure_logger, sparse_clf_dataset, with_std  # noqa: F811
+    failure_logger,
+    sparse_clf_dataset,
+    with_std,  # noqa: F811
 ):
     X_np, X = sparse_clf_dataset
 
     t_X = cu_scale(X, with_mean=False, with_std=with_std, copy=True)
-    #  assert type(t_X) == type(X)
+    #  assert type(t_X) is type(X)
     if cpx.scipy.sparse.issparse(X):
         assert cpx.scipy.sparse.issparse(t_X)
     if scipy.sparse.issparse(X):
@@ -234,7 +227,7 @@ def test_maxabs_scale(failure_logger, clf_dataset, axis):  # noqa: F811
     X_np, X = clf_dataset
 
     t_X = cu_maxabs_scale(X, axis=axis)
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     sk_t_X = sk_maxabs_scale(X_np, axis=axis)
 
@@ -247,8 +240,8 @@ def test_maxabs_scaler(failure_logger, clf_dataset):  # noqa: F811
     scaler = cuMaxAbsScaler(copy=True)
     t_X = scaler.fit_transform(X)
     r_X = scaler.inverse_transform(t_X)
-    assert type(t_X) == type(X)
-    assert type(r_X) == type(t_X)
+    assert type(t_X) is type(X)
+    assert type(r_X) is type(t_X)
 
     scaler = skMaxAbsScaler(copy=True)
     sk_t_X = scaler.fit_transform(X_np)
@@ -258,16 +251,14 @@ def test_maxabs_scaler(failure_logger, clf_dataset):  # noqa: F811
     assert_allclose(r_X, sk_r_X)
 
 
-def test_maxabs_scaler_sparse(
-    failure_logger, sparse_clf_dataset
-):  # noqa: F811
+def test_maxabs_scaler_sparse(failure_logger, sparse_clf_dataset):  # noqa: F811
     X_np, X = sparse_clf_dataset
 
     scaler = cuMaxAbsScaler(copy=True)
     t_X = scaler.fit_transform(X)
     r_X = scaler.inverse_transform(t_X)
-    #  assert type(t_X) == type(X)
-    #  assert type(r_X) == type(t_X)
+    #  assert type(t_X) is type(X)
+    #  assert type(r_X) is type(t_X)
     if cpx.scipy.sparse.issparse(X):
         assert cpx.scipy.sparse.issparse(t_X)
     if scipy.sparse.issparse(X):
@@ -291,7 +282,7 @@ def test_normalizer(failure_logger, clf_dataset, norm):  # noqa: F811
 
     normalizer = cuNormalizer(norm=norm, copy=True)
     t_X = normalizer.fit_transform(X)
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     normalizer = skNormalizer(norm=norm, copy=True)
     sk_t_X = normalizer.fit_transform(X_np)
@@ -301,7 +292,9 @@ def test_normalizer(failure_logger, clf_dataset, norm):  # noqa: F811
 
 @pytest.mark.parametrize("norm", ["l1", "l2", "max"])
 def test_normalizer_sparse(
-    failure_logger, sparse_clf_dataset, norm  # noqa: F811
+    failure_logger,
+    sparse_clf_dataset,
+    norm,  # noqa: F811
 ):
     X_np, X = sparse_clf_dataset
 
@@ -310,7 +303,7 @@ def test_normalizer_sparse(
 
     normalizer = cuNormalizer(norm=norm, copy=True)
     t_X = normalizer.fit_transform(X)
-    #  assert type(t_X) == type(X)
+    #  assert type(t_X) is type(X)
     if cpx.scipy.sparse.issparse(X):
         assert cpx.scipy.sparse.issparse(t_X)
     if scipy.sparse.issparse(X):
@@ -326,7 +319,11 @@ def test_normalizer_sparse(
 @pytest.mark.parametrize("norm", ["l1", "l2", "max"])
 @pytest.mark.parametrize("return_norm", [True, False])
 def test_normalize(
-    failure_logger, clf_dataset, axis, norm, return_norm  # noqa: F811
+    failure_logger,
+    clf_dataset,
+    axis,
+    norm,
+    return_norm,  # noqa: F811
 ):
     X_np, X = clf_dataset
 
@@ -344,20 +341,22 @@ def test_normalize(
             X_np, axis=axis, norm=norm, return_norm=return_norm
         )
 
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
     assert_allclose(t_X, sk_t_X)
 
 
 @pytest.mark.parametrize("norm", ["l1", "l2", "max"])
 def test_normalize_sparse(
-    failure_logger, sparse_clf_dataset, norm  # noqa: F811
+    failure_logger,
+    sparse_clf_dataset,
+    norm,  # noqa: F811
 ):
     X_np, X = sparse_clf_dataset
 
     axis = 0 if X.format == "csc" else 1
 
     t_X = cu_normalize(X, axis=axis, norm=norm)
-    #  assert type(t_X) == type(X)
+    #  assert type(t_X) is type(X)
     if cpx.scipy.sparse.issparse(X):
         assert cpx.scipy.sparse.issparse(t_X)
     if scipy.sparse.issparse(X):
@@ -399,7 +398,7 @@ def test_imputer(
         add_indicator=add_indicator,
     )
     t_X = imputer.fit_transform(X)
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     imputer = skSimpleImputer(
         copy=True,
@@ -431,7 +430,7 @@ def test_imputer_sparse(sparse_imputer_dataset, strategy):  # noqa: F811
         fill_value=fill_value,
     )
     t_X = imputer.fit_transform(X)
-    #  assert type(t_X) == type(X)
+    #  assert type(t_X) is type(X)
     if cpx.scipy.sparse.issparse(X):
         assert cpx.scipy.sparse.issparse(t_X)
     if scipy.sparse.issparse(X):
@@ -468,7 +467,7 @@ def test_poly_features(
         include_bias=include_bias,
     )
     t_X = polyfeatures.fit_transform(X)
-    assert type(X) == type(t_X)
+    assert type(X) is type(t_X)
     cu_feature_names = polyfeatures.get_feature_names()
 
     if isinstance(t_X, np.ndarray):
@@ -510,7 +509,7 @@ def test_poly_features_sparse(
         include_bias=include_bias,
     )
     t_X = polyfeatures.fit_transform(X)
-    #  assert type(t_X) == type(X)
+    #  assert type(t_X) is type(X)
     if cpx.scipy.sparse.issparse(X):
         assert cpx.scipy.sparse.issparse(t_X)
     if scipy.sparse.issparse(X):
@@ -531,7 +530,7 @@ def test_add_dummy_feature(failure_logger, clf_dataset, value):  # noqa: F811
     X_np, X = clf_dataset
 
     t_X = cu_add_dummy_feature(X, value=value)
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     sk_t_X = sk_add_dummy_feature(X_np, value=value)
     assert_allclose(t_X, sk_t_X)
@@ -539,12 +538,14 @@ def test_add_dummy_feature(failure_logger, clf_dataset, value):  # noqa: F811
 
 @pytest.mark.parametrize("value", [1.0, 42])
 def test_add_dummy_feature_sparse(
-    failure_logger, sparse_dataset_with_coo, value  # noqa: F811
+    failure_logger,
+    sparse_dataset_with_coo,
+    value,  # noqa: F811
 ):
     X_np, X = sparse_dataset_with_coo
 
     t_X = cu_add_dummy_feature(X, value=value)
-    #  assert type(t_X) == type(X)
+    #  assert type(t_X) is type(X)
     if cpx.scipy.sparse.issparse(X):
         assert cpx.scipy.sparse.issparse(t_X)
     if scipy.sparse.issparse(X):
@@ -559,7 +560,7 @@ def test_binarize(failure_logger, clf_dataset, threshold):  # noqa: F811
     X_np, X = clf_dataset
 
     t_X = cu_binarize(X, threshold=threshold, copy=True)
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     sk_t_X = sk_binarize(X_np, threshold=threshold, copy=True)
 
@@ -568,12 +569,14 @@ def test_binarize(failure_logger, clf_dataset, threshold):  # noqa: F811
 
 @pytest.mark.parametrize("threshold", [0.0, 1.0])
 def test_binarize_sparse(
-    failure_logger, sparse_clf_dataset, threshold  # noqa: F811
+    failure_logger,
+    sparse_clf_dataset,
+    threshold,  # noqa: F811
 ):
     X_np, X = sparse_clf_dataset
 
     t_X = cu_binarize(X, threshold=threshold, copy=True)
-    #  assert type(t_X) == type(X)
+    #  assert type(t_X) is type(X)
     if cpx.scipy.sparse.issparse(X):
         assert cpx.scipy.sparse.issparse(t_X)
     if scipy.sparse.issparse(X):
@@ -590,7 +593,7 @@ def test_binarizer(failure_logger, clf_dataset, threshold):  # noqa: F811
 
     binarizer = cuBinarizer(threshold=threshold, copy=True)
     t_X = binarizer.fit_transform(X)
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     binarizer = skBinarizer(threshold=threshold, copy=True)
     sk_t_X = binarizer.fit_transform(X_np)
@@ -600,13 +603,15 @@ def test_binarizer(failure_logger, clf_dataset, threshold):  # noqa: F811
 
 @pytest.mark.parametrize("threshold", [0.0, 1.0])
 def test_binarizer_sparse(
-    failure_logger, sparse_clf_dataset, threshold  # noqa: F811
+    failure_logger,
+    sparse_clf_dataset,
+    threshold,  # noqa: F811
 ):
     X_np, X = sparse_clf_dataset
 
     binarizer = cuBinarizer(threshold=threshold, copy=True)
     t_X = binarizer.fit_transform(X)
-    #  assert type(t_X) == type(X)
+    #  assert type(t_X) is type(X)
     if cpx.scipy.sparse.issparse(X):
         assert cpx.scipy.sparse.issparse(t_X)
     if scipy.sparse.issparse(X):
@@ -638,8 +643,8 @@ def test_robust_scaler(
     )
     t_X = scaler.fit_transform(X)
     r_X = scaler.inverse_transform(t_X)
-    assert type(t_X) == type(X)
-    assert type(r_X) == type(t_X)
+    assert type(t_X) is type(X)
+    assert type(r_X) is type(t_X)
 
     scaler = skRobustScaler(
         with_centering=with_centering,
@@ -675,8 +680,8 @@ def test_robust_scaler_sparse(
     )
     t_X = scaler.fit_transform(X)
     r_X = scaler.inverse_transform(t_X)
-    #  assert type(t_X) == type(X)
-    #  assert type(r_X) == type(t_X)
+    #  assert type(t_X) is type(X)
+    #  assert type(r_X) is type(t_X)
     if cpx.scipy.sparse.issparse(X):
         assert cpx.scipy.sparse.issparse(t_X)
     if scipy.sparse.issparse(X):
@@ -721,7 +726,7 @@ def test_robust_scale(
         quantile_range=quantile_range,
         copy=True,
     )
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     sk_t_X = sk_robust_scale(
         X_np,
@@ -760,7 +765,7 @@ def test_robust_scale_sparse(
         quantile_range=quantile_range,
         copy=True,
     )
-    #  assert type(t_X) == type(X)
+    #  assert type(t_X) is type(X)
     if cpx.scipy.sparse.issparse(X):
         assert cpx.scipy.sparse.issparse(t_X)
     if scipy.sparse.issparse(X):
@@ -803,7 +808,11 @@ def test_robust_scale_sparse(
     ],
 )
 def test_kbinsdiscretizer(
-    failure_logger, blobs_dataset, n_bins, encode, strategy  # noqa: F811
+    failure_logger,
+    blobs_dataset,
+    n_bins,
+    encode,
+    strategy,  # noqa: F811
 ):
     X_np, X = blobs_dataset
 
@@ -814,8 +823,8 @@ def test_kbinsdiscretizer(
     r_X = transformer.inverse_transform(t_X)
 
     if encode != "onehot":
-        assert type(t_X) == type(X)
-        assert type(r_X) == type(t_X)
+        assert type(t_X) is type(X)
+        assert type(r_X) is type(t_X)
 
     transformer = skKBinsDiscretizer(
         n_bins=n_bins, encode=encode, strategy=strategy
@@ -833,7 +842,10 @@ def test_kbinsdiscretizer(
 @pytest.mark.parametrize("missing_values", [0, 1, np.nan])
 @pytest.mark.parametrize("features", ["missing-only", "all"])
 def test_missing_indicator(
-    failure_logger, int_dataset, missing_values, features  # noqa: F811
+    failure_logger,
+    int_dataset,
+    missing_values,
+    features,  # noqa: F811
 ):
     zero_filled, one_filled, nan_filled = int_dataset
     if missing_values == 0:
@@ -847,10 +859,10 @@ def test_missing_indicator(
         missing_values=missing_values, features=features
     )
     ft_X = indicator.fit_transform(X)
-    assert type(ft_X) == type(X)
+    assert type(ft_X) is type(X)
     indicator.fit(X)
     t_X = indicator.transform(X)
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     indicator = skMissingIndicator(
         missing_values=missing_values, features=features
@@ -865,7 +877,9 @@ def test_missing_indicator(
 
 @pytest.mark.parametrize("features", ["missing-only", "all"])
 def test_missing_indicator_sparse(
-    failure_logger, sparse_int_dataset, features  # noqa: F811
+    failure_logger,
+    sparse_int_dataset,
+    features,  # noqa: F811
 ):
     X_np, X = sparse_int_dataset
 
@@ -875,7 +889,7 @@ def test_missing_indicator_sparse(
     assert cpx.scipy.sparse.issparse(ft_X) or scipy.sparse.issparse(ft_X)
     indicator.fit(X)
     t_X = indicator.transform(X)
-    # assert type(t_X) == type(X)
+    # assert type(t_X) is type(X)
     assert cpx.scipy.sparse.issparse(t_X) or scipy.sparse.issparse(t_X)
 
     indicator = skMissingIndicator(features=features, missing_values=1)
@@ -895,8 +909,8 @@ def test_function_transformer(clf_dataset):  # noqa: F811
     )
     t_X = transformer.fit_transform(X)
     r_X = transformer.inverse_transform(t_X)
-    assert type(t_X) == type(X)
-    assert type(r_X) == type(t_X)
+    assert type(t_X) is type(X)
+    assert type(r_X) is type(t_X)
 
     transformer = skFunctionTransformer(
         func=np.exp, inverse_func=np.log, check_inverse=False
@@ -929,6 +943,9 @@ def test_function_transformer_sparse(sparse_clf_dataset):  # noqa: F811
     assert_allclose(r_X, sk_r_X)
 
 
+@pytest.mark.filterwarnings(
+    "ignore:'ignore_implicit_zeros' takes effect only with sparse matrix.*:UserWarning"
+)
 @pytest.mark.parametrize("n_quantiles", [30, 100])
 @pytest.mark.parametrize("output_distribution", ["uniform", "normal"])
 @pytest.mark.parametrize("ignore_implicit_zeros", [False, True])
@@ -941,6 +958,14 @@ def test_quantile_transformer(
     ignore_implicit_zeros,
     subsample,
 ):
+    pytest.importorskip(
+        "sklearn",
+        minversion="1.5.0",
+        reason=(
+            "subsampling in QuantileTransformer is different pre-1.5.0, this test checks "
+            "that we implement the post-1.5.0 behavior"
+        ),
+    )
     X_np, X = nan_filled_positive
 
     transformer = cuQuantileTransformer(
@@ -952,9 +977,9 @@ def test_quantile_transformer(
         copy=True,
     )
     t_X = transformer.fit_transform(X)
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
     r_X = transformer.inverse_transform(t_X)
-    assert type(r_X) == type(t_X)
+    assert type(r_X) is type(t_X)
 
     quantiles_ = transformer.quantiles_
     references_ = transformer.references_
@@ -1037,6 +1062,12 @@ def test_quantile_transformer_sparse(
     assert_allclose(r_X, sk_r_X)
 
 
+@pytest.mark.filterwarnings(
+    "ignore:'ignore_implicit_zeros' takes effect only with sparse matrix.*:UserWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:n_quantiles .* is greater than the total number of samples.*:UserWarning"
+)
 @pytest.mark.parametrize("axis", [0, 1])
 @pytest.mark.parametrize("n_quantiles", [30, 100])
 @pytest.mark.parametrize("output_distribution", ["uniform", "normal"])
@@ -1051,6 +1082,12 @@ def test_quantile_transform(
     ignore_implicit_zeros,
     subsample,
 ):
+    # The exact way the subsampling works in QuantileTransformer changed
+    # and means we do not get exactly the same quantiles for older versions.
+    # This is Ok, we do not need to get the exact same quantiles.
+    if Version(sklearn.__version__) < Version("1.5.0"):
+        pytest.skip("Skipping test for sklearn < 1.5.0")
+
     X_np, X = nan_filled_positive
 
     t_X = cu_quantile_transform(
@@ -1063,7 +1100,7 @@ def test_quantile_transform(
         random_state=42,
         copy=True,
     )
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     sk_t_X = sk_quantile_transform(
         X_np,
@@ -1082,7 +1119,10 @@ def test_quantile_transform(
 @pytest.mark.parametrize("method", ["yeo-johnson", "box-cox"])
 @pytest.mark.parametrize("standardize", [False, True])
 def test_power_transformer(
-    failure_logger, nan_filled_positive, method, standardize  # noqa: F811
+    failure_logger,
+    nan_filled_positive,
+    method,
+    standardize,  # noqa: F811
 ):
     X_np, X = nan_filled_positive
 
@@ -1090,11 +1130,11 @@ def test_power_transformer(
         method=method, standardize=standardize, copy=True
     )
     ft_X = transformer.fit_transform(X)
-    assert type(ft_X) == type(X)
+    assert type(ft_X) is type(X)
     t_X = transformer.transform(X)
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
     r_X = transformer.inverse_transform(t_X)
-    assert type(r_X) == type(t_X)
+    assert type(r_X) is type(t_X)
 
     normalizer = skPowerTransformer(
         method=method, standardize=standardize, copy=True
@@ -1110,12 +1150,15 @@ def test_power_transformer(
 @pytest.mark.parametrize("method", ["yeo-johnson", "box-cox"])
 @pytest.mark.parametrize("standardize", [False, True])
 def test_power_transform(
-    failure_logger, nan_filled_positive, method, standardize  # noqa: F811
+    failure_logger,
+    nan_filled_positive,
+    method,
+    standardize,  # noqa: F811
 ):
     X_np, X = nan_filled_positive
 
     t_X = cu_power_transform(X, method=method, standardize=standardize)
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     sk_t_X = sk_power_transform(X_np, method=method, standardize=standardize)
 
@@ -1129,7 +1172,7 @@ def test_kernel_centerer():
     model = cuKernelCenterer()
     model.fit(K)
     t_X = model.transform(K, copy=True)
-    assert type(t_X) == type(X)
+    assert type(t_X) is type(X)
 
     model = skKernelCenterer()
     sk_t_X = model.fit_transform(K)

@@ -1,50 +1,34 @@
 #
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
 import platform
+
+import cupy as cp
+import cupyx as cpx
+import numpy as np
+import pytest
+from cupyx.scipy.sparse import coo_matrix
+from scipy import stats
 from sklearn.preprocessing import normalize as sk_normalize
+from sklearn.utils._mask import _get_mask as sk_get_mask
+
 from cuml.testing.test_preproc_utils import assert_allclose
+from cuml.thirdparty_adapters.adapters import _get_mask as cu_get_mask
+from cuml.thirdparty_adapters.adapters import (
+    _masked_column_mean,
+    _masked_column_median,
+    _masked_column_mode,
+    check_array,
+)
 from cuml.thirdparty_adapters.sparsefuncs_fast import (
-    csr_mean_variance_axis0,
-    csc_mean_variance_axis0,
     _csc_mean_variance_axis0,
+    csc_mean_variance_axis0,
+    csr_mean_variance_axis0,
     inplace_csr_row_normalize_l1,
     inplace_csr_row_normalize_l2,
 )
-from sklearn.utils._mask import _get_mask as sk_get_mask
-from cuml.thirdparty_adapters.adapters import (
-    check_array,
-    _get_mask as cu_get_mask,
-    _masked_column_median,
-    _masked_column_mean,
-    _masked_column_mode,
-)
-from cuml.internals.safe_imports import cpu_only_import_from
-from cuml.internals.safe_imports import gpu_only_import_from
-from cuml.internals.safe_imports import cpu_only_import
-import pytest
-
-from cuml.internals.safe_imports import gpu_only_import
-
-cp = gpu_only_import("cupy")
-cpx = gpu_only_import("cupyx")
-np = cpu_only_import("numpy")
-coo_matrix = gpu_only_import_from("cupyx.scipy.sparse", "coo_matrix")
-stats = cpu_only_import_from("scipy", "stats")
-
 
 IS_ARM = platform.processor() == "aarch64"
 

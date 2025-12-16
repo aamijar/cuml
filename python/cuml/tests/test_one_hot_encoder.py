@@ -1,35 +1,21 @@
-# Copyright (c) 2020-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from sklearn.preprocessing import OneHotEncoder as SkOneHotEncoder
-from cuml.testing.utils import (
-    stress_param,
-    from_df_to_numpy,
-    assert_inverse_equal,
-    generate_inputs_from_categories,
-)
-from cuml.preprocessing import OneHotEncoder
-from cuml.internals.safe_imports import gpu_only_import_from
-import pytest
-from cuml.internals.safe_imports import cpu_only_import
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 import math
 
-from cuml.internals.safe_imports import gpu_only_import
+import cupy as cp
+import numpy as np
+import pandas as pd
+import pytest
+from cudf import DataFrame
+from sklearn.preprocessing import OneHotEncoder as SkOneHotEncoder
 
-cp = gpu_only_import("cupy")
-np = cpu_only_import("numpy")
-pd = cpu_only_import("pandas")
-DataFrame = gpu_only_import_from("cudf", "DataFrame")
+from cuml.preprocessing import OneHotEncoder
+from cuml.testing.utils import (
+    assert_inverse_equal,
+    from_df_to_numpy,
+    generate_inputs_from_categories,
+    stress_param,
+)
 
 
 def _from_df_to_cupy(df):
@@ -39,7 +25,9 @@ def _from_df_to_cupy(df):
             if isinstance(df, pd.DataFrame):
                 df[col] = [ord(c) for c in df[col]]
             else:
-                df[col] = [ord(c) for c in df[col].values_host]
+                df[col] = [
+                    ord(c) if c is not None else c for c in df[col].values_host
+                ]
     return cp.array(from_df_to_numpy(df))
 
 
@@ -99,7 +87,7 @@ def test_onehot_categories(as_array):
 
 @pytest.mark.parametrize("as_array", [True, False], ids=["cupy", "cudf"])
 @pytest.mark.filterwarnings(
-    "ignore:((.|\n)*)unknown((.|\n)*):UserWarning:" "cuml[.*]"
+    "ignore:((.|\n)*)unknown((.|\n)*):UserWarning:cuml[.*]"
 )
 def test_onehot_fit_handle_unknown(as_array):
     X = DataFrame({"chars": ["a", "b"], "int": [0, 2]})
@@ -138,7 +126,7 @@ def test_onehot_transform_handle_unknown(as_array):
 
 @pytest.mark.parametrize("as_array", [True, False], ids=["cupy", "cudf"])
 @pytest.mark.filterwarnings(
-    "ignore:((.|\n)*)unknown((.|\n)*):UserWarning:" "cuml[.*]"
+    "ignore:((.|\n)*)unknown((.|\n)*):UserWarning:cuml[.*]"
 )
 def test_onehot_inverse_transform_handle_unknown(as_array):
     X = DataFrame({"chars": ["a", "b"], "int": [0, 2]})
@@ -146,7 +134,7 @@ def test_onehot_inverse_transform_handle_unknown(as_array):
     ref = DataFrame({"chars": [None, "b"], "int": [0, 2]})
     if as_array:
         X = _from_df_to_cupy(X)
-        ref = DataFrame({0: [None, ord("b")], 1: [0, 2]})
+        ref = _from_df_to_cupy(ref)
 
     enc = OneHotEncoder(handle_unknown="ignore")
     enc = enc.fit(X)
@@ -231,7 +219,7 @@ def test_onehot_drop_one_of_each(as_array):
             "Some categories [0-9a-zA-Z, ]* were not found",
         ],
         [
-            DataFrame({"chars": "b", "int": 3}),
+            DataFrame({"chars": ["b"], "int": [3]}),
             "Wrong input for parameter `drop`.",
         ],
     ],
@@ -354,7 +342,6 @@ def test_onehot_category_class_count(total_classes: int):
     num_rows = [3, 10, 100]
 
     for row_count in num_rows:
-
         class_per_row = int(math.ceil(total_classes / float(row_count))) + 1
         example_df = DataFrame()
 
@@ -394,14 +381,3 @@ def test_onehot_get_feature_names(as_array):
     ]
     feature_names = enc.get_feature_names(["fruit", "size"])
     assert np.array_equal(feature_names, feature_names_ref)
-
-
-# TODO(24.08): remove this test
-def test_sparse_deprecation():
-    X = cp.array([[33, 1], [34, 3], [34, 2]])
-    oh = OneHotEncoder(sparse=True)
-
-    with pytest.warns(
-        FutureWarning, match="`sparse` was renamed to `sparse_output`"
-    ):
-        oh.fit(X)

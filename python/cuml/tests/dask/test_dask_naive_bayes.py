@@ -1,32 +1,19 @@
 #
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from sklearn.metrics import accuracy_score
-from cuml.testing.dask.utils import load_text_corpus
-from cuml.naive_bayes.naive_bayes import MultinomialNB as SGNB
-from cuml.dask.naive_bayes import MultinomialNB
-import pytest
+import cupy as cp
 import dask.array
-from cuml.internals.safe_imports import gpu_only_import
+import pytest
+from sklearn.metrics import accuracy_score
 
-cp = gpu_only_import("cupy")
+from cuml.dask.naive_bayes import MultinomialNB
+from cuml.naive_bayes.naive_bayes import MultinomialNB as SGNB
+from cuml.testing.dask.utils import load_text_corpus
 
 
 def test_basic_fit_predict(client):
-
     X, y = load_text_corpus(client)
 
     model = MultinomialNB()
@@ -42,7 +29,6 @@ def test_basic_fit_predict(client):
 
 
 def test_single_distributed_exact_results(client):
-
     X, y = load_text_corpus(client)
 
     sgX, sgy = (X.compute(), y.compute())
@@ -62,7 +48,6 @@ def test_single_distributed_exact_results(client):
 
 
 def test_score(client):
-
     X, y = load_text_corpus(client)
 
     model = MultinomialNB()

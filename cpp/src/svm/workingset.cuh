@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -83,7 +72,7 @@ inline void WorkingSet<math_t>::SimpleSelect(
                                   (int)8 * sizeof(math_t),
                                   stream);
 
-  if (ML::Logger::get().shouldLogFor(CUML_LEVEL_DEBUG) && n_train < 20) {
+  if (ML::default_logger().should_log(rapids_logger::level_enum::debug) && n_train < 20) {
     std::stringstream ss;
     raft::print_device_vector("idx_sorted", f_idx_sorted.data(), n_train, ss);
     CUML_LOG_DEBUG(ss.str().c_str());
@@ -102,11 +91,10 @@ inline void WorkingSet<math_t>::SimpleSelect(
   // In case we could not find enough elements, then we just fill using the
   // still available elements.
   if (n_already_selected < n_ws) {
-    CUML_LOG_WARN(
-      "Warning: could not fill working set, found only %d"
-      " elements",
+    CUML_LOG_DEBUG(
+      "Could not fill working set: found only %d elements, "
+      "filling remainder with additional elements",
       n_already_selected);
-    CUML_LOG_DEBUG("Filling up with unused elements");
     RAFT_CUDA_TRY(cudaMemset(available, 1, sizeof(bool) * n_train));
     n_already_selected += GatherAvailable(n_already_selected, n_ws - n_already_selected, true);
   }
@@ -236,7 +224,7 @@ inline int WorkingSet<math_t>::GatherAvailable(int n_already_selected,
       available, n_train, idx.data(), n_already_selected);
     RAFT_CUDA_TRY(cudaPeekAtLastError());
   }
-  if (ML::Logger::get().shouldLogFor(CUML_LEVEL_DEBUG) && n_train < 20) {
+  if (ML::default_logger().should_log(rapids_logger::level_enum::debug) && n_train < 20) {
     std::stringstream ss;
     raft::print_device_vector("avail", available, n_train, ss);
     CUML_LOG_DEBUG(ss.str().c_str());
@@ -250,7 +238,7 @@ inline int WorkingSet<math_t>::GatherAvailable(int n_already_selected,
                thrust::make_permutation_iterator(av_ptr, idx_ptr),
                thrust::make_permutation_iterator(av_ptr, idx_ptr + n_train),
                av_sorted_ptr);
-  if (ML::Logger::get().shouldLogFor(CUML_LEVEL_DEBUG) && n_train < 20) {
+  if (ML::default_logger().should_log(rapids_logger::level_enum::debug) && n_train < 20) {
     std::stringstream ss;
     raft::print_device_vector("avail_sorted", available_sorted.data(), n_train, ss);
     CUML_LOG_DEBUG(ss.str().c_str());
@@ -276,7 +264,7 @@ inline int WorkingSet<math_t>::GatherAvailable(int n_already_selected,
     raft::copy(
       idx.data() + n_already_selected, idx_tmp.data() + n_selected - n_copy, n_copy, stream);
   }
-  if (ML::Logger::get().shouldLogFor(CUML_LEVEL_DEBUG) && n_train < 20) {
+  if (ML::default_logger().should_log(rapids_logger::level_enum::debug) && n_train < 20) {
     std::stringstream ss;
     raft::print_device_vector("selected", idx.data(), n_already_selected + n_copy, ss);
     CUML_LOG_DEBUG(ss.str().c_str());

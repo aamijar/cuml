@@ -1,30 +1,18 @@
 #
-# Copyright (c) 2020-2024, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
+
+import cupy as cp
+import cupyx
+import pytest
+from sklearn.decomposition import IncrementalPCA as skIPCA
 
 from cuml.common.exceptions import NotFittedError
-from cuml.testing.utils import array_equal
-from cuml.decomposition.incremental_pca import _svd_flip
-from cuml.decomposition import IncrementalPCA as cuIPCA
 from cuml.datasets import make_blobs
-from sklearn.decomposition import IncrementalPCA as skIPCA
-import pytest
-from cuml.internals.safe_imports import gpu_only_import
-
-cp = gpu_only_import("cupy")
-cupyx = gpu_only_import("cupyx")
+from cuml.decomposition import IncrementalPCA as cuIPCA
+from cuml.decomposition.incremental_pca import _svd_flip
+from cuml.testing.utils import array_equal
 
 
 @pytest.mark.parametrize(
@@ -51,7 +39,6 @@ def test_fit(
     batch_size_divider,
     whiten,
 ):
-
     if sparse_format == "csc":
         pytest.skip(
             "cupyx.scipy.sparse.csc.csc_matrix does not support"
@@ -109,7 +96,6 @@ def test_fit(
 def test_partial_fit(
     nrows, ncols, n_components, density, batch_size_divider, whiten
 ):
-
     X, _ = make_blobs(n_samples=nrows, n_features=ncols, random_state=10)
 
     cu_ipca = cuIPCA(n_components=n_components, whiten=whiten)
@@ -157,9 +143,9 @@ def test_exceptions():
 def test_svd_flip():
     x = cp.array(range(-10, 80)).reshape((9, 10))
     u, s, v = cp.linalg.svd(x, full_matrices=False)
-    u_true, v_true = _svd_flip(u, v, u_based_decision=True)
+    u_true, v_true = _svd_flip(u, v, flip_signs_based_on_U=True)
     reco_true = cp.dot(u_true * s, v_true)
-    u_false, v_false = _svd_flip(u, v, u_based_decision=False)
+    u_false, v_false = _svd_flip(u, v, flip_signs_based_on_U=False)
     reco_false = cp.dot(u_false * s, v_false)
 
     assert array_equal(reco_true, x)

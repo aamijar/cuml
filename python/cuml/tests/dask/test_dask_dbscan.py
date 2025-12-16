@@ -1,34 +1,22 @@
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import pairwise_distances
-from sklearn.datasets import make_blobs
+import numpy as np
+import pytest
 from sklearn.cluster import DBSCAN as skDBSCAN
+from sklearn.datasets import make_blobs
+from sklearn.metrics import pairwise_distances
+from sklearn.preprocessing import StandardScaler
+
+from cuml.testing.datasets import make_pattern
 from cuml.testing.utils import (
-    get_pattern,
-    unit_param,
-    quality_param,
-    stress_param,
     array_equal,
     assert_dbscan_equal,
+    quality_param,
+    stress_param,
+    unit_param,
 )
-import pytest
-from cuml.internals.safe_imports import cpu_only_import
-
-np = cpu_only_import("numpy")
 
 
 @pytest.mark.mg
@@ -165,7 +153,7 @@ def test_dbscan_sklearn_comparison(name, nrows, eps, client):
     }
 
     n_samples = nrows
-    pat = get_pattern(name, n_samples)
+    pat = make_pattern(name, n_samples)
     params = default_base.copy()
     params.update(pat[1])
     X, y = pat[0]
@@ -211,7 +199,7 @@ def test_dbscan_default(name, client):
         "n_clusters": 2,
     }
     n_samples = 500
-    pat = get_pattern(name, n_samples)
+    pat = make_pattern(name, n_samples)
     params = default_base.copy()
     params.update(pat[1])
     X, y = pat[0]
@@ -285,7 +273,7 @@ def test_dbscan_no_calc_core_point_indices(client):
 
     params = {"eps": 1.1, "min_samples": 4}
     n_samples = 1000
-    pat = get_pattern("noisy_moons", n_samples)
+    pat = make_pattern("noisy_moons", n_samples)
 
     X, y = pat[0]
 

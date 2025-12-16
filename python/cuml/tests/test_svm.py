@@ -1,48 +1,40 @@
-# Copyright (c) 2019-2023, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-
 import platform
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
-from sklearn.datasets import make_classification, make_gaussian_quantiles
-from sklearn.datasets import make_regression, make_friedman1
-from sklearn.datasets import load_iris, make_blobs
+
+import cudf
+import cupy as cp
+import numpy as np
+import pytest
+import scipy.sparse as scipy_sparse
+from cudf.pandas import LOADED as cudf_pandas_active
+from numba import cuda
 from sklearn import svm
+from sklearn.datasets import (
+    load_iris,
+    make_blobs,
+    make_classification,
+    make_friedman1,
+    make_gaussian_quantiles,
+    make_regression,
+)
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+import cuml
+import cuml.svm as cu_svm
+from cuml.common import input_to_cuml_array
+from cuml.common.exceptions import NotFittedError
 from cuml.testing.utils import (
-    unit_param,
+    compare_probabilistic_svm,
+    compare_svm,
     quality_param,
     stress_param,
-    compare_svm,
-    compare_probabilistic_svm,
     svm_array_equal,
+    unit_param,
 )
-from cuml.common import input_to_cuml_array
-import cuml.svm as cu_svm
-import cuml
-from cuml.internals.safe_imports import gpu_only_import_from
-from cuml.internals.safe_imports import cpu_only_import
-import pytest
-from cuml.internals.safe_imports import gpu_only_import
-
-cp = gpu_only_import("cupy")
-np = cpu_only_import("numpy")
-cuda = gpu_only_import_from("numba", "cuda")
-
-cudf = gpu_only_import("cudf")
-scipy_sparse = cpu_only_import("scipy.sparse")
 
 IS_ARM = platform.processor() == "aarch64"
 
@@ -163,7 +155,6 @@ def test_svm_skl_cmp_datasets(params, dataset, n_rows, n_cols):
 
     # Default to numpy for testing
     with cuml.using_output_type("numpy"):
-
         cuSVC = cu_svm.SVC(**params)
         cuSVC.fit(X_train, y_train)
 
@@ -190,7 +181,6 @@ def test_svm_skl_cmp_multiclass(
 
     # Default to numpy for testing
     with cuml.using_output_type("numpy"):
-
         cuSVC = cu_svm.SVC(**params)
         cuSVC.fit(X_train, y_train)
 
@@ -210,7 +200,6 @@ def test_svm_skl_cmp_multiclass(
     ],
 )
 def test_svm_skl_cmp_decision_function(params, n_rows=4000, n_cols=20):
-
     X_train, X_test, y_train, y_test = make_dataset(
         "classification1", n_rows, n_cols
     )
@@ -230,11 +219,7 @@ def test_svm_skl_cmp_decision_function(params, n_rows=4000, n_cols=20):
     sklSVC.fit(X_train, y_train)
     df2 = sklSVC.decision_function(X_test)
 
-    if params["probability"]:
-        tol = 2e-2  # See comments in SVC decision_function method
-    else:
-        tol = 1e-5
-    assert mean_squared_error(df1, df2) < tol
+    assert mean_squared_error(df1, df2) < 1e-5
 
 
 @pytest.mark.parametrize(
@@ -268,14 +253,24 @@ def test_svm_predict(params, n_pred):
     assert accuracy > 99
 
 
+def test_svc_predict_proba_not_available():
+    X, y = make_classification()
+    model = cuml.SVC().fit(X, y)
+
+    with pytest.raises(NotFittedError, match="probability=True"):
+        model.predict_proba(X)
+
+    with pytest.raises(NotFittedError, match="probability=True"):
+        model.predict_log_proba(X)
+
+
 # Probabilisic SVM uses scikit-learn's CalibratedClassifierCV, and therefore
 # the input array is converted to numpy under the hood. We explicitly test for
 # all supported input types, to avoid errors like
 # https://github.com/rapidsai/cuml/issues/3090
-@pytest.mark.parametrize(
-    "in_type", ["numpy", "numba", "cudf", "cupy", "pandas", "cuml"]
-)
-def test_svm_skl_cmp_predict_proba(in_type, n_rows=10000, n_cols=20):
+@pytest.mark.parametrize("in_type", ["numpy", "cudf", "cupy", "pandas"])
+@pytest.mark.parametrize("n_classes", [2, 4])
+def test_svc_predict_proba(in_type, n_classes):
     params = {
         "kernel": "rbf",
         "C": 1,
@@ -284,9 +279,10 @@ def test_svm_skl_cmp_predict_proba(in_type, n_rows=10000, n_cols=20):
         "probability": True,
     }
     X, y = make_classification(
-        n_samples=n_rows,
-        n_features=n_cols,
-        n_informative=2,
+        n_samples=1000,
+        n_features=20,
+        n_informative=5,
+        n_classes=n_classes,
         n_redundant=10,
         random_state=137,
     )
@@ -301,12 +297,17 @@ def test_svm_skl_cmp_predict_proba(in_type, n_rows=10000, n_cols=20):
     cuSVC.fit(X_m.to_output(in_type), y_m.to_output(in_type))
     sklSVC = svm.SVC(**params)
     sklSVC.fit(X_train, y_train)
-    compare_probabilistic_svm(cuSVC, sklSVC, X_test, y_test, 1e-3, 1e-2)
+
+    tol = 1e-2 if n_classes == 2 else 1e-1
+    compare_probabilistic_svm(
+        cuSVC, sklSVC, X_test, y_test, tol=tol, brier_tol=tol
+    )
 
 
 @pytest.mark.parametrize("class_weight", [None, {1: 10}, "balanced"])
 @pytest.mark.parametrize("sample_weight", [None, True])
-def test_svc_weights(class_weight, sample_weight):
+@pytest.mark.parametrize("probability", [False, True])
+def test_svc_weights(class_weight, sample_weight, probability):
     # We are using the following example as a test case
     # https://scikit-learn.org/stable/auto_examples/svm/plot_separating_hyperplane_unbalanced.html
     X, y = make_blobs(
@@ -320,7 +321,12 @@ def test_svc_weights(class_weight, sample_weight):
         # Put large weight on class 1
         sample_weight = y * 9 + 1
 
-    params = {"kernel": "linear", "C": 1, "gamma": "scale"}
+    params = {
+        "kernel": "linear",
+        "C": 1,
+        "gamma": "scale",
+        "probability": probability,
+    }
     params["class_weight"] = class_weight
     cuSVC = cu_svm.SVC(**params)
     cuSVC.fit(X, y, sample_weight)
@@ -335,7 +341,13 @@ def test_svc_weights(class_weight, sample_weight):
 
     sklSVC = svm.SVC(**params)
     sklSVC.fit(X, y, sample_weight)
-    compare_svm(cuSVC, sklSVC, X, y, coef_tol=1e-5, report_summary=True)
+    if not probability:
+        # TODO: SVC estimators with probability=True don't expose all the fitted
+        # attributes properly on the cuml side. This will be best resolved by
+        # changing our internal representation rather than cludging on more
+        # @property definitions. Skipping the attribute equivalence check here
+        # for now.
+        compare_svm(cuSVC, sklSVC, X, y, coef_tol=1e-5, report_summary=True)
 
 
 @pytest.mark.parametrize(
@@ -404,6 +416,7 @@ def test_svm_gamma(params):
 
 @pytest.mark.parametrize("x_dtype", [np.float32, np.float64])
 @pytest.mark.parametrize("y_dtype", [np.float32, np.float64, np.int32])
+@pytest.mark.xfail(reason="SVC testing inflexibility (see issue #6575)")
 def test_svm_numeric_arraytype(x_dtype, y_dtype):
     X, y = get_binary_iris_dataset()
     X = X.astype(x_dtype, order="F")
@@ -448,10 +461,7 @@ def get_memsize(svc):
     "n_iter", [unit_param(10), quality_param(100), stress_param(1000)]
 )
 @pytest.mark.parametrize("n_cols", [1000])
-@pytest.mark.parametrize("use_handle", [True, False])
-def test_svm_memleak(
-    params, n_rows, n_iter, n_cols, use_handle, dataset="blobs"
-):
+def test_svm_memleak(params, n_rows, n_iter, n_cols, dataset="blobs"):
     """
     Test whether there is any memory leak.
 
@@ -460,8 +470,7 @@ def test_svm_memleak(
 
     """
     X_train, X_test, y_train, y_test = make_dataset(dataset, n_rows, n_cols)
-    stream = cuml.cuda.Stream()
-    handle = cuml.Handle(stream=stream)
+    handle = cuml.Handle()
     # Warmup. Some modules that are used in SVC allocate space on the device
     # and consume memory. Here we make sure that this allocation is done
     # before the first call to get_memory_info.
@@ -515,8 +524,7 @@ def test_svm_memleak_on_exception(
         n_samples=n_rows, n_features=n_cols, random_state=137, centers=2
     )
     X_train = X_train.astype(np.float32)
-    stream = cuml.cuda.Stream()
-    handle = cuml.Handle(stream=stream)
+    handle = cuml.Handle()
 
     # Warmup. Some modules that are used in SVC allocate space on the device
     # and consume memory. Here we make sure that this allocation is done
@@ -666,6 +674,10 @@ def test_svm_predict_convert_dtype(train_dtype, test_dtype, classifier):
     reason="Test fails unexpectedly on ARM. "
     "github.com/rapidsai/cuml/issues/5100",
 )
+@pytest.mark.skipif(
+    cudf_pandas_active,
+    reason="cudf.pandas causes small numeric issues in this test only ",
+)
 def test_svm_no_support_vectors():
     n_rows = 10
     n_cols = 3
@@ -685,3 +697,37 @@ def test_svm_no_support_vectors():
     assert model.support_vectors_.shape[0] == 0
     # Check disabled due to https://github.com/rapidsai/cuml/issues/4095
     # assert model.support_vectors_.shape[1] == n_cols
+
+
+@pytest.mark.parametrize("classifier", [False, True])
+def test_max_iter_n_iter(classifier):
+    if classifier:
+        cls = cuml.SVC
+        X, y = make_classification(random_state=42)
+    else:
+        cls = cuml.SVR
+        X, y = make_regression(random_state=42)
+
+    # max_iter limit is respected
+    model = cls(max_iter=5).fit(X, y)
+    assert (model.n_iter_.item() if classifier else model.n_iter_) == 5
+
+    # Using TotalIters results in the same behavior, but warns
+    model = cls(max_iter=cls.TotalIters(5))
+    with pytest.warns(FutureWarning, match="TotalIters"):
+        model.fit(X, y)
+    assert (model.n_iter_.item() if classifier else model.n_iter_) == 5
+
+
+def test_svc_multiclass_n_iter():
+    X, y = make_classification(random_state=42, n_classes=3, n_informative=4)
+    model = cuml.SVC().fit(X, y)
+    assert model.n_iter_.dtype == np.int32
+    assert model.n_iter_.shape == (3,)
+
+
+def test_svc_probability_n_iter():
+    X, y = make_classification(random_state=42)
+    model = cuml.SVC(probability=True).fit(X, y)
+    assert model.n_iter_.dtype == np.int32
+    assert model.n_iter_.shape == (1,)

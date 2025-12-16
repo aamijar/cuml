@@ -1,40 +1,23 @@
 #
-# Copyright (c) 2019-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-
-from cuml.internals.safe_imports import cpu_only_import
-from cuml.internals.safe_imports import cpu_only_import_from
-from cuml.internals.safe_imports import gpu_only_import_from
-from sklearn.feature_extraction.text import TfidfVectorizer as SkTfidfVect
-from sklearn.feature_extraction.text import HashingVectorizer as SkHashVect
-from sklearn.feature_extraction.text import CountVectorizer as SkCountVect
+import cupy as cp
+import numpy as np
+import pandas as pd
 import pytest
-from cuml.feature_extraction.text import CountVectorizer
-from cuml.feature_extraction.text import TfidfVectorizer
-from cuml.feature_extraction.text import HashingVectorizer
-from cuml.internals.safe_imports import gpu_only_import
+from cudf import Series
+from numpy.testing import assert_array_equal
+from sklearn.feature_extraction.text import CountVectorizer as SkCountVect
+from sklearn.feature_extraction.text import HashingVectorizer as SkHashVect
+from sklearn.feature_extraction.text import TfidfVectorizer as SkTfidfVect
 
-cp = gpu_only_import("cupy")
-
-Series = gpu_only_import_from("cudf", "Series")
-assert_array_equal = cpu_only_import_from(
-    "numpy.testing", "assert_array_equal"
+from cuml.feature_extraction.text import (
+    CountVectorizer,
+    HashingVectorizer,
+    TfidfVectorizer,
 )
-np = cpu_only_import("numpy")
-pd = cpu_only_import("pandas")
 
 
 def test_count_vectorizer():
@@ -331,7 +314,7 @@ def test_only_delimiters():
 @pytest.mark.parametrize("analyzer", ["char", "char_wb"])
 @pytest.mark.parametrize("ngram_range", NGRAM_RANGES, ids=NGRAM_IDS)
 def test_character_ngrams(analyzer, ngram_range):
-    data = ["ab c", "" "edf gh"]
+    data = ["ab c", "edf gh"]
 
     res = CountVectorizer(analyzer=analyzer, ngram_range=ngram_range)
     res.fit(Series(data))
@@ -479,6 +462,9 @@ def test_hashingvectorizer():
 
 
 @pytest.mark.xfail
+@pytest.mark.filterwarnings(
+    "ignore:The parameter 'token_pattern' will not be used:UserWarning:sklearn"
+)
 def test_vectorizer_empty_token_case():
     """
     We ignore empty tokens right now but sklearn treats them as a character

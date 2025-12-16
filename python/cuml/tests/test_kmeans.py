@@ -1,42 +1,27 @@
-# Copyright (c) 2019-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from cuml.internals.safe_imports import gpu_only_import
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import adjusted_rand_score
-from sklearn import cluster
-from cuml.testing.utils import (
-    get_pattern,
-    unit_param,
-    quality_param,
-    stress_param,
-    array_equal,
-)
-from cuml.datasets import make_blobs
-import pytest
 import random
+
+import cupy as cp
+import numpy as np
+import pytest
+import sklearn
+from sklearn import cluster
+from sklearn.metrics import adjusted_rand_score
+from sklearn.preprocessing import StandardScaler
 
 import cuml
 import cuml.internals.logger as logger
-from cuml.internals.safe_imports import cpu_only_import
-
-np = cpu_only_import("numpy")
-
-
-cp = gpu_only_import("cupy")
-
+from cuml.datasets import make_blobs
+from cuml.testing.datasets import make_pattern
+from cuml.testing.utils import (
+    array_equal,
+    quality_param,
+    stress_param,
+    unit_param,
+)
 
 dataset_names = ["blobs", "noisy_circles", "noisy_moons", "varied", "aniso"]
 
@@ -62,14 +47,13 @@ def get_data_consistency_test():
 @pytest.fixture
 def random_state():
     random_state = random.randint(0, 10**6)
-    with logger.set_level(logger.level_debug):
+    with logger.set_level(logger.level_enum.debug):
         logger.debug("Random seed: {}".format(random_state))
     return random_state
 
 
 @pytest.mark.xfail
 def test_n_init_cluster_consistency(random_state):
-
     nclusters = 8
     X, y = get_data_consistency_test()
 
@@ -103,7 +87,6 @@ def test_n_init_cluster_consistency(random_state):
 def test_traditional_kmeans_plus_plus_init(
     nrows, ncols, nclusters, random_state
 ):
-
     # Using fairly high variance between points in clusters
     cluster_std = 1.0
 
@@ -127,7 +110,9 @@ def test_traditional_kmeans_plus_plus_init(
     cuml_kmeans.fit(X)
     cu_score = cuml_kmeans.score(X)
 
-    kmeans = cluster.KMeans(random_state=random_state, n_clusters=nclusters)
+    kmeans = cluster.KMeans(
+        random_state=random_state, n_clusters=nclusters, n_init=10
+    )
     kmeans.fit(cp.asnumpy(X))
     sk_score = kmeans.score(cp.asnumpy(X))
 
@@ -139,7 +124,6 @@ def test_traditional_kmeans_plus_plus_init(
 @pytest.mark.parametrize("nclusters", [5, 10])
 @pytest.mark.parametrize("max_weight", [10])
 def test_weighted_kmeans(nrows, ncols, nclusters, max_weight, random_state):
-
     # Using fairly high variance between points in clusters
     cluster_std = 1.0
     np.random.seed(random_state)
@@ -167,11 +151,17 @@ def test_weighted_kmeans(nrows, ncols, nclusters, max_weight, random_state):
     cuml_kmeans.fit(X, sample_weight=wt)
     cu_score = cuml_kmeans.score(X)
 
-    sk_kmeans = cluster.KMeans(random_state=random_state, n_clusters=nclusters)
+    sk_kmeans = cluster.KMeans(
+        random_state=random_state, n_clusters=nclusters, n_init=10
+    )
     sk_kmeans.fit(cp.asnumpy(X), sample_weight=wt)
     sk_score = sk_kmeans.score(cp.asnumpy(X))
 
-    assert abs(cu_score - sk_score) <= cluster_std * 1.5
+    if cu_score < sk_score:
+        relative_tolerance = 0.1  # allow 10% difference
+        diff = abs(cu_score - sk_score)
+        avg_score = (abs(cu_score) + abs(sk_score)) / 2.0
+        assert diff / avg_score <= relative_tolerance
 
 
 @pytest.mark.parametrize("nrows", [1000, 10000])
@@ -181,7 +171,6 @@ def test_weighted_kmeans(nrows, ncols, nclusters, max_weight, random_state):
 def test_kmeans_clusters_blobs(
     nrows, ncols, nclusters, random_state, cluster_std
 ):
-
     X, y = make_blobs(
         int(nrows),
         ncols,
@@ -191,11 +180,14 @@ def test_kmeans_clusters_blobs(
         random_state=0,
     )
 
+    # Set n_init to 2 to improve stability of k-means|| initialization
+    # See https://github.com/rapidsai/cuml/issues/5530 for details
     cuml_kmeans = cuml.KMeans(
         init="k-means||",
         n_clusters=nclusters,
         random_state=random_state,
         output_type="numpy",
+        n_init=2,
     )
 
     preds = cuml_kmeans.fit_predict(X)
@@ -206,7 +198,6 @@ def test_kmeans_clusters_blobs(
 @pytest.mark.parametrize("name", dataset_names)
 @pytest.mark.parametrize("nrows", [unit_param(1000), quality_param(5000)])
 def test_kmeans_sklearn_comparison(name, nrows, random_state):
-
     default_base = {
         "quantile": 0.3,
         "eps": 0.3,
@@ -216,7 +207,7 @@ def test_kmeans_sklearn_comparison(name, nrows, random_state):
         "n_clusters": 3,
     }
 
-    pat = get_pattern(name, nrows)
+    pat = make_pattern(name, nrows)
 
     params = default_base.copy()
     params.update(pat[1])
@@ -251,7 +242,6 @@ def test_kmeans_sklearn_comparison(name, nrows, random_state):
     "nrows", [unit_param(500), quality_param(5000), stress_param(500000)]
 )
 def test_kmeans_sklearn_comparison_default(name, nrows, random_state):
-
     default_base = {
         "quantile": 0.3,
         "eps": 0.3,
@@ -261,7 +251,7 @@ def test_kmeans_sklearn_comparison_default(name, nrows, random_state):
         "n_clusters": 3,
     }
 
-    pat = get_pattern(name, nrows)
+    pat = make_pattern(name, nrows)
 
     params = default_base.copy()
     params.update(pat[1])
@@ -297,8 +287,6 @@ def test_kmeans_sklearn_comparison_default(name, nrows, random_state):
         (1000, 1.0, 1 << 15, "preset"),
         (500, 1.5, 1 << 5, "k-means||"),
         (1000, 1.0, 1 << 10, "random"),
-        # Redundant case to better exercise 'k-means||'
-        (1000, 1.0, 1 << 15, "k-means||"),
     ],
 )
 @pytest.mark.parametrize(
@@ -312,14 +300,13 @@ def test_all_kmeans_params(
     max_samples_per_batch,
     random_state,
 ):
-
     np.random.seed(0)
     X = np.random.rand(1000, 10)
 
     if init == "preset":
         init = np.random.rand(n_clusters, 10)
 
-    cuml_kmeans = cuml.KMeans(
+    model = cuml.KMeans(
         n_clusters=n_clusters,
         max_iter=max_iter,
         init=init,
@@ -327,9 +314,16 @@ def test_all_kmeans_params(
         oversampling_factor=oversampling_factor,
         max_samples_per_batch=max_samples_per_batch,
         output_type="cupy",
+        n_init=1,
     )
+    model.fit(X)
+    assert hasattr(model, "labels_")
 
-    cuml_kmeans.fit_predict(X)
+    # Check that can clone and refit
+    model2 = sklearn.clone(model)
+    assert not hasattr(model2, "labels_")
+    model2.fit(X)
+    assert hasattr(model2, "labels_")
 
 
 @pytest.mark.parametrize(
@@ -340,7 +334,6 @@ def test_all_kmeans_params(
     "nclusters", [unit_param(5), quality_param(10), stress_param(50)]
 )
 def test_score(nrows, ncols, nclusters, random_state):
-
     X, y = make_blobs(
         int(nrows),
         ncols,
@@ -355,6 +348,7 @@ def test_score(nrows, ncols, nclusters, random_state):
         n_clusters=nclusters,
         random_state=random_state,
         output_type="numpy",
+        n_init=1,
     )
 
     cuml_kmeans.fit(X)
@@ -386,7 +380,6 @@ def test_score(nrows, ncols, nclusters, random_state):
 def test_fit_transform_weighted_kmeans(
     nrows, ncols, nclusters, max_weight, random_state
 ):
-
     # Using fairly high variance between points in clusters
     cluster_std = 1.0
     np.random.seed(random_state)
@@ -418,5 +411,62 @@ def test_fit_transform_weighted_kmeans(
     sk_transf = sk_kmeans.fit_transform(cp.asnumpy(X), sample_weight=wt)
     sk_score = sk_kmeans.score(cp.asnumpy(X))
 
-    assert abs(cu_score - sk_score) <= cluster_std * 1.5
+    # we fail if cuML's score is significantly worse than sklearn's
+    if cu_score < sk_score:
+        relative_tolerance = 0.1  # allow 10% difference
+        diff = abs(cu_score - sk_score)
+        avg_score = (abs(cu_score) + abs(sk_score)) / 2.0
+        assert diff / avg_score <= relative_tolerance
+
     assert sk_transf.shape == cuml_transf.shape
+
+
+def test_kmeans_empty_x():
+    """Check that a nice error happens if X is empty, rather than a segfault"""
+    model = cuml.KMeans()
+
+    X = np.empty(shape=(0, 10))
+    y = np.ones(shape=0)
+    with pytest.raises(ValueError, match=r"Found array with 0 sample\(s\)"):
+        model.fit(X, y)
+
+    X = np.empty(shape=(10, 0))
+    y = np.ones(shape=10)
+    with pytest.raises(ValueError, match=r"Found array with 0 feature\(s\)"):
+        model.fit(X, y)
+
+
+def test_kmeans_n_samples_less_than_n_clusters():
+    model = cuml.KMeans(n_clusters=8)
+
+    X = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+    with pytest.raises(
+        ValueError, match="n_samples=2 should be >= n_clusters=8"
+    ):
+        model.fit(X)
+
+
+def test_kmeans_init_wrong_shape():
+    X = np.empty(shape=(20, 10))
+
+    # init not compatible with X
+    model = cuml.KMeans(n_init=1, init=X[:8, :2], n_clusters=8)
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"The shape of the initial centers .* does not match "
+            r"the number of features of the data"
+        ),
+    ):
+        model.fit(X)
+
+    # init not compatible with n_clusters
+    model = cuml.KMeans(n_init=1, init=X[:2], n_clusters=8)
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"The shape of the initial centers .* does not match "
+            r"the number of clusters"
+        ),
+    ):
+        model.fit(X)

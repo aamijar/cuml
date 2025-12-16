@@ -1,22 +1,11 @@
 /*
- * Copyright (c) 2021-2023, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
 
-#include <raft/distance/distance_types.hpp>
+#include <cuml/common/distance_type.hpp>
 
 #include <cstdint>
 
@@ -105,7 +94,7 @@ double silhouette_score(const raft::handle_t& handle,
                         int* labels,
                         int nLabels,
                         double* silScores,
-                        raft::distance::DistanceType metric);
+                        ML::distance::DistanceType metric);
 
 namespace Batched {
 /**
@@ -138,7 +127,7 @@ float silhouette_score(const raft::handle_t& handle,
                        int n_labels,
                        float* scores,
                        int chunk,
-                       raft::distance::DistanceType metric);
+                       ML::distance::DistanceType metric);
 double silhouette_score(const raft::handle_t& handle,
                         double* X,
                         int n_rows,
@@ -147,7 +136,7 @@ double silhouette_score(const raft::handle_t& handle,
                         int n_labels,
                         double* scores,
                         int chunk,
-                        raft::distance::DistanceType metric);
+                        ML::distance::DistanceType metric);
 
 }  // namespace Batched
 /**
@@ -349,7 +338,7 @@ void pairwise_distance(const raft::handle_t& handle,
                        int m,
                        int n,
                        int k,
-                       raft::distance::DistanceType metric,
+                       ML::distance::DistanceType metric,
                        bool isRowMajor   = true,
                        double metric_arg = 2.0);
 
@@ -376,7 +365,7 @@ void pairwise_distance(const raft::handle_t& handle,
                        int m,
                        int n,
                        int k,
-                       raft::distance::DistanceType metric,
+                       ML::distance::DistanceType metric,
                        bool isRowMajor  = true,
                        float metric_arg = 2.0f);
 
@@ -393,7 +382,7 @@ void pairwiseDistance_sparse(const raft::handle_t& handle,
                              int* y_indptr,
                              int* x_indices,
                              int* y_indices,
-                             raft::distance::DistanceType metric,
+                             ML::distance::DistanceType metric,
                              float metric_arg);
 void pairwiseDistance_sparse(const raft::handle_t& handle,
                              float* x,
@@ -408,7 +397,7 @@ void pairwiseDistance_sparse(const raft::handle_t& handle,
                              int* y_indptr,
                              int* x_indices,
                              int* y_indices,
-                             raft::distance::DistanceType metric,
+                             ML::distance::DistanceType metric,
                              float metric_arg);
 
 /**
@@ -425,7 +414,7 @@ void pairwiseDistance_sparse(const raft::handle_t& handle,
  * @tparam distance_type: Distance type to consider
  * @return Trustworthiness score
  */
-template <typename math_t, raft::distance::DistanceType distance_type>
+template <typename math_t, ML::distance::DistanceType distance_type>
 double trustworthiness_score(const raft::handle_t& h,
                              const math_t* X,
                              math_t* X_embedded,

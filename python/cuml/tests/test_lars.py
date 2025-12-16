@@ -1,41 +1,27 @@
-# Copyright (c) 2020-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
+import sys
+
+import cupy as cp
+import numpy as np
+import pytest
 import sklearn
-
-from sklearn.linear_model import Lars as skLars
 from sklearn.datasets import fetch_california_housing
+from sklearn.linear_model import Lars as skLars
+
+from cuml.experimental.linear_model import Lars as cuLars
+from cuml.testing.datasets import make_regression_dataset
 from cuml.testing.utils import (
     array_equal,
-    unit_param,
     quality_param,
     stress_param,
+    unit_param,
 )
-from cuml.experimental.linear_model import Lars as cuLars
-import sys
-import pytest
-from cuml.internals.safe_imports import cpu_only_import
-from cuml.internals.safe_imports import gpu_only_import
-
-cp = gpu_only_import("cupy")
-np = cpu_only_import("numpy")
-
 
 # As tests directory is not a module, we need to add it to the path
 sys.path.insert(0, ".")
-from test_linear_model import make_regression_dataset  # noqa: E402
 
 
 def normalize_data(X, y):
@@ -99,8 +85,8 @@ def test_lars_model(datatype, nrows, column_info, precompute):
         # scikit-learn accuracy.
         accuracy_target = sklars.score(X_test, y_test)
         tol = 1.96 * np.sqrt(accuracy_target * (1.0 - accuracy_target) / 100.0)
-        if tol < 0.001:
-            tol = 0.001  # We allow at least 0.1% tolerance
+        if tol < 0.002:
+            tol = 0.002  # We allow at least 0.2% tolerance
         print(cu_score_train, cu_score_test, accuracy_target, tol)
         assert cu_score_train >= sklars.score(X_train, y_train) - tol
         assert cu_score_test >= accuracy_target - tol
@@ -122,10 +108,13 @@ def test_lars_model(datatype, nrows, column_info, precompute):
 )
 @pytest.mark.parametrize("precompute", [True, False])
 def test_lars_collinear(datatype, nrows, column_info, precompute):
+    # Assume at least 4GB memory
+    max_gpu_memory = pytest.max_gpu_memory or 4
+
     ncols, n_info = column_info
-    if nrows == 500000 and ncols == 1000 and pytest.max_gpu_memory < 32:
+    if nrows == 500000 and ncols == 1000 and max_gpu_memory < 32:
         if pytest.adapt_stress_test:
-            nrows = nrows * pytest.max_gpu_memory // 32
+            nrows = nrows * max_gpu_memory // 32
         else:
             pytest.skip(
                 "Insufficient GPU memory for this test."

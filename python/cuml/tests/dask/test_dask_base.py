@@ -1,38 +1,20 @@
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from sklearn.model_selection import train_test_split
-from cuml.dask.datasets import make_regression
-from cuml.dask.linear_model import LinearRegression
-from cuml.internals.safe_imports import cpu_only_import_from
+import cupy
+import numpy as np
 import pytest
-from cuml.internals.safe_imports import cpu_only_import
-import cuml
-from cuml.dask.datasets import make_blobs
-from cuml.testing.dask.utils import load_text_corpus
-from cuml.dask.naive_bayes.naive_bayes import MultinomialNB
-from cuml.dask.cluster import KMeans
 from dask_ml.wrappers import ParallelPostFit
-from cuml.internals.safe_imports import gpu_only_import
+from numpy.testing import assert_equal
+from sklearn.model_selection import train_test_split
 
-cupy = gpu_only_import("cupy")
-
-
-np = cpu_only_import("numpy")
-
-assert_equal = cpu_only_import_from("numpy.testing", "assert_equal")
+import cuml
+from cuml.dask.cluster import KMeans
+from cuml.dask.datasets import make_blobs, make_regression
+from cuml.dask.linear_model import LinearRegression
+from cuml.dask.naive_bayes.naive_bayes import MultinomialNB
+from cuml.testing.dask.utils import load_text_corpus
 
 
 def make_dataset(datatype, nrows, ncols, n_info):
@@ -50,7 +32,6 @@ def make_dataset(datatype, nrows, ncols, n_info):
 @pytest.mark.parametrize("data_size", [[500, 20, 10]])
 @pytest.mark.parametrize("fit_intercept", [True, False])
 def test_get_combined_model(datatype, keys, data_size, fit_intercept, client):
-
     nrows, ncols, n_info = data_size
     X_train, y_train, X_test = make_dataset(datatype, nrows, ncols, n_info)
     model = LinearRegression(
@@ -71,7 +52,6 @@ def test_get_combined_model(datatype, keys, data_size, fit_intercept, client):
 
 
 def test_check_internal_model_failures(client):
-
     # Test model not trained yet
     model = LinearRegression(client=client)
     assert model.get_combined_model() is None
@@ -97,7 +77,6 @@ def test_check_internal_model_failures(client):
 def test_regressor_mg_train_sg_predict(
     datatype, keys, data_size, fit_intercept, client
 ):
-
     nrows, ncols, n_info = data_size
     X_train, y_train, X_test = make_dataset(datatype, nrows, ncols, n_info)
 
@@ -121,7 +100,6 @@ def test_regressor_mg_train_sg_predict(
 def test_regressor_sg_train_mg_predict(
     datatype, keys, data_size, fit_intercept, client
 ):
-
     # Just testing for basic compatibility w/ dask-ml's ParallelPostFit.
     # Refer to test_pickle.py for more extensive testing of single-GPU
     # model serialization.
@@ -151,7 +129,6 @@ def test_regressor_sg_train_mg_predict(
 
 
 def test_getattr(client):
-
     # Test getattr on local param
     kmeans_model = KMeans(client=client)
 
@@ -162,16 +139,14 @@ def test_getattr(client):
     assert kmeans_model.client is not None
 
     # Test getattr on local_model param with a non-distributed model
-
     X, y = make_blobs(
-        n_samples=5,
+        n_samples=20,
         n_features=5,
-        centers=2,
+        centers=8,
         n_parts=2,
         cluster_std=0.01,
         random_state=10,
     )
-
     kmeans_model.fit(X)
 
     assert kmeans_model.cluster_centers_ is not None

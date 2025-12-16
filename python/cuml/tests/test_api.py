@@ -1,32 +1,19 @@
 #
-# Copyright (c) 2020-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from sklearn.datasets import make_classification
-from cuml.testing.utils import ClassEnumerator
-from cuml.internals.base import Base
-from cuml.internals.safe_imports import cpu_only_import
 import inspect
+
+import cupy as cp
+import numpy as np
 import pytest
+from sklearn.datasets import make_classification
+
 import cuml
 import cuml.internals.mixins as cumix
-from cuml.internals.safe_imports import gpu_only_import
-
-cp = gpu_only_import("cupy")
-np = cpu_only_import("numpy")
-
+from cuml.internals.base import Base
+from cuml.testing.utils import ClassEnumerator
 
 ###############################################################################
 #                        Helper functions and classes                         #
@@ -34,7 +21,6 @@ np = cpu_only_import("numpy")
 
 
 def func_positional_arg(func):
-
     if hasattr(func, "__wrapped__"):
         return func_positional_arg(func.__wrapped__)
 
@@ -56,10 +42,7 @@ def dataset():
     return X, y
 
 
-models_config = ClassEnumerator(
-    module=cuml, exclude_classes=(cuml.UniversalBase,)
-)
-models = models_config.get_models()
+models = ClassEnumerator(module=cuml).get_models()
 
 # tag system based on experimental tag system from Scikit-learn >=0.21
 # https://scikit-learn.org/stable/developers/develop.html#estimator-tags
@@ -220,7 +203,6 @@ def test_mro(model):
 def test_fit_function(dataset, model_name):
     # This test ensures that our estimators return self after a call to fit
     if model_name in [
-        "SparseRandomProjection",
         "TSNE",
         "TruncatedSVD",
         "AutoARIMA",
@@ -237,6 +219,8 @@ def test_fit_function(dataset, model_name):
         model = models[model_name](np.random.normal(0.0, 1.0, (10,)))
     elif model_name in ["RandomForestClassifier", "RandomForestRegressor"]:
         model = models[model_name](n_bins=32)
+    elif model_name == "KMeans":
+        model = models[model_name](n_init="auto")
     else:
         if n_pos_args_constr == 1:
             model = models[model_name]()

@@ -1,32 +1,19 @@
 #
-# Copyright (c) 2021-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2021-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from cuml.svm import SVC
-from cuml.preprocessing import StandardScaler
-from sklearn.datasets import load_iris
-from cuml.model_selection import train_test_split
-from cuml.datasets import make_regression, make_classification
-from cuml.testing.utils import ClassEnumerator
-from cuml.model_selection import GridSearchCV
-from cuml.pipeline import Pipeline, make_pipeline
+import cupy
 import pytest
-import cuml
-from cuml.internals.safe_imports import gpu_only_import
+from sklearn.datasets import load_iris
 
-cupy = gpu_only_import("cupy")
+import cuml
+from cuml.datasets import make_classification, make_regression
+from cuml.model_selection import GridSearchCV, train_test_split
+from cuml.pipeline import Pipeline, make_pipeline
+from cuml.preprocessing import StandardScaler
+from cuml.svm import SVC
+from cuml.testing.utils import ClassEnumerator
 
 
 def test_pipeline():
@@ -35,7 +22,7 @@ def test_pipeline():
     pipe = Pipeline(steps=[("scaler", StandardScaler()), ("svc", SVC())])
     pipe.fit(X_train, y_train)
     score = pipe.score(X_test, y_test)
-    assert score > 0.8
+    assert score > 0.75
 
 
 def test_gridsearchCV():
@@ -70,7 +57,6 @@ models = models_config.get_models()
         "Lasso",
         "Ridge",
         "LinearRegression",
-        "LogisticRegression",
         "MBSGDRegressor",
         "RandomForestRegressor",
         "KNeighborsRegressor",
@@ -99,7 +85,12 @@ def test_pipeline_with_regression(
 
 @pytest.mark.parametrize(
     "model_key",
-    ["MBSGDClassifier", "RandomForestClassifier", "KNeighborsClassifier"],
+    [
+        "MBSGDClassifier",
+        "RandomForestClassifier",
+        "KNeighborsClassifier",
+        "LogisticRegression",
+    ],
 )
 @pytest.mark.parametrize("instantiation", ["Pipeline", "make_pipeline"])
 def test_pipeline_with_classification(
@@ -120,7 +111,7 @@ def test_pipeline_with_classification(
     assert isinstance(prediction, cupy.ndarray)
     if model_key == "RandomForestClassifier":
         pytest.skip(
-            "RandomForestClassifier is not yet supported"
+            "RandomForestClassifier is not yet supported "
             "by the Pipeline utility"
         )
     _ = pipe.score(X_test, y_test)

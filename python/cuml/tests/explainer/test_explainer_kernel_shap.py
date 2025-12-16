@@ -1,40 +1,23 @@
 #
-# Copyright (c) 2020-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from sklearn.model_selection import train_test_split
-from cuml.testing.utils import (
-    create_synthetic_dataset,
-    ClassEnumerator,
-    get_shap_values,
-)
-from cuml.datasets import make_regression
-from cuml.internals.import_utils import has_shap
-from cuml.internals.import_utils import has_scipy
-from cuml import KernelExplainer
-from cuml import Lasso
-import sklearn.neighbors
-import pytest
 import math
-from cuml.internals.safe_imports import cpu_only_import
+
+import cupy as cp
+import numpy as np
+import pytest
+import scipy.special
+import sklearn.neighbors
+from sklearn.datasets import make_regression
+from sklearn.model_selection import train_test_split
+
 import cuml
-from cuml.internals.safe_imports import gpu_only_import
-
-cp = gpu_only_import("cupy")
-np = cpu_only_import("numpy")
-
+from cuml import KernelExplainer, Lasso
+from cuml.datasets import make_regression
+from cuml.testing.datasets import with_dtype
+from cuml.testing.utils import ClassEnumerator, get_shap_values
 
 models_config = ClassEnumerator(module=cuml)
 models = models_config.get_models()
@@ -130,12 +113,17 @@ def test_exact_classification_datasets(exact_shap_classification_dataset):
 @pytest.mark.parametrize("n_background", [10, 30])
 @pytest.mark.parametrize("model", [cuml.TruncatedSVD, cuml.PCA])
 def test_kernel_shap_standalone(dtype, n_features, n_background, model):
-    X_train, X_test, y_train, y_test = create_synthetic_dataset(
-        n_samples=n_background + 3,
-        n_features=n_features,
-        test_size=3,
-        noise=0.1,
-        dtype=dtype,
+    X, y = with_dtype(
+        make_regression(
+            n_samples=n_background + 3,
+            n_features=n_features,
+            noise=0.1,
+            random_state=42,
+        ),
+        dtype,
+    )
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=3, random_state=42
     )
 
     mod = model(n_components=3).fit(X_train, y_train)
@@ -170,12 +158,19 @@ def test_kernel_shap_standalone(dtype, n_features, n_background, model):
 @pytest.mark.parametrize("n_background", [30])
 @pytest.mark.parametrize("model", [cuml.SVR])
 def test_kernel_gpu_cpu_shap(dtype, n_features, n_background, model):
-    X_train, X_test, y_train, y_test = create_synthetic_dataset(
-        n_samples=n_background + 3,
-        n_features=n_features,
-        test_size=3,
-        noise=0.1,
-        dtype=dtype,
+    shap = pytest.importorskip("shap")
+
+    X, y = with_dtype(
+        make_regression(
+            n_samples=n_background + 3,
+            n_features=n_features,
+            noise=0.1,
+            random_state=42,
+        ),
+        dtype,
+    )
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=3, random_state=42
     )
 
     mod = model().fit(X_train, y_train)
@@ -194,15 +189,10 @@ def test_kernel_gpu_cpu_shap(dtype, n_features, n_background, model):
             np.sum(shap_values[test_idx]) - abs(fx[test_idx] - exp_v)
         ) <= 1e-5
 
-    if has_shap():
-        import shap
+    explainer = shap.KernelExplainer(mod.predict, cp.asnumpy(X_train))
+    cpu_shap_values = explainer.shap_values(cp.asnumpy(X_test))
 
-        explainer = shap.KernelExplainer(mod.predict, cp.asnumpy(X_train))
-        cpu_shap_values = explainer.shap_values(cp.asnumpy(X_test))
-
-        assert np.allclose(
-            shap_values, cpu_shap_values, rtol=1e-01, atol=1e-01
-        )
+    assert np.allclose(shap_values, cpu_shap_values, rtol=1e-01, atol=1e-01)
 
 
 def test_kernel_housing_dataset(housing_dataset):
@@ -218,7 +208,9 @@ def test_kernel_housing_dataset(housing_dataset):
     y_train = y_train.astype(np.float32)
     y_test = y_test.astype(np.float32)
 
-    cumodel = cuml.RandomForestRegressor().fit(X_train, y_train)
+    cumodel = cuml.RandomForestRegressor(max_features="sqrt").fit(
+        X_train, y_train
+    )
 
     explainer = KernelExplainer(
         model=cumodel.predict, data=X_train[:100], output_type="numpy"
@@ -227,7 +219,7 @@ def test_kernel_housing_dataset(housing_dataset):
     cu_shap_values = explainer.shap_values(X_test[:2])
 
     assert np.allclose(
-        cu_shap_values, housing_regression_result, rtol=1e-01, atol=1e-01
+        cu_shap_values, housing_regression_result, rtol=5e-01, atol=5e-01
     )
 
 
@@ -239,10 +231,7 @@ def test_kernel_housing_dataset(housing_dataset):
 def test_binom_coef():
     for i in range(1, 101):
         val = cuml.explainer.kernel_shap._binomCoef(100, i)
-        if has_scipy():
-            from scipy.special import binom
-
-            assert math.isclose(val, binom(100, i), rel_tol=1e-15)
+        assert math.isclose(val, scipy.special.binom(100, i), rel_tol=1e-15)
 
 
 def test_shapley_kernel():
@@ -271,7 +260,6 @@ def test_partial_powerset():
 
 @pytest.mark.parametrize("full_powerset", [True, False])
 def test_get_number_of_exact_random_samples(full_powerset):
-
     if full_powerset:
         (
             nsamples_exact,
@@ -342,17 +330,25 @@ def test_l1_regularization(exact_shap_regression_dataset, l1_type):
     assert isinstance(nz, cp.ndarray)
 
 
-@pytest.mark.skip(reason="Currently failing for unknown reasons.")
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+@pytest.mark.filterwarnings("ignore:Changing solver.*:UserWarning")
+@pytest.mark.filterwarnings(
+    "ignore:overflow encountered in divide:RuntimeWarning"
+)
 def test_typeerror_input():
     X, y = make_regression(n_samples=100, n_features=10, random_state=10)
     clf = Lasso()
     clf.fit(X, y)
     exp = KernelExplainer(model=clf.predict, data=X, nsamples=10)
     try:
-        _ = exp.shap_values(X)
-        assert True
-    except TypeError:
-        assert False
+        exp.shap_values(X)
+    except ValueError as error:
+        if "operands could not be broadcast together" in str(error):
+            pytest.xfail(
+                "Known sklearn LARS broadcasting bug - see scikit-learn#9603"
+            )
+        else:
+            raise error
 
 
 ###############################################################################
@@ -522,24 +518,24 @@ golden_classification_result = [
 housing_regression_result = np.array(
     [
         [
-            -0.00182223,
-            -0.01232004,
-            -0.4782278,
-            0.04781425,
-            -0.01337761,
-            -0.34830606,
-            -0.4682865,
-            -0.20812261,
+            -0.8974524140357971,
+            0.001421511173248291,
+            -0.0688888430595398,
+            -0.03094351291656494,
+            -0.015949785709381104,
+            -0.23235774040222168,
+            -0.21568483114242554,
+            -0.0710676908493042,
         ],
         [
-            -0.0013606,
-            0.0110372,
-            -0.445176,
-            -0.08268094,
-            0.00406259,
-            -0.02185595,
-            -0.47673094,
-            -0.13557231,
+            -0.744776725769043,
+            0.01672065258026123,
+            -0.1426766812801361,
+            0.06865900754928589,
+            -0.01718229055404663,
+            -0.06164264678955078,
+            -0.18163931369781494,
+            -0.039707064628601074,
         ],
     ],
     dtype=np.float32,

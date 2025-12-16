@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2018-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -148,7 +137,7 @@ inline OPT_RETCODE min_lbfgs(const LBFGSParam<T>& param,
                              int* k,                   // output iterations
                              SimpleVec<T>& workspace,  // scratch space
                              cudaStream_t stream,
-                             int verbosity = 0)
+                             rapids_logger::level_enum verbosity = 0)
 {
   int n                    = x.len;
   const int workspace_size = lbfgs_workspace_size(param, n);
@@ -179,7 +168,7 @@ inline OPT_RETCODE min_lbfgs(const LBFGSParam<T>& param,
   std::vector<T> fx_hist(param.past > 0 ? param.past : 0);
 
   *k = 0;
-  ML::Logger::get().setLevel(verbosity);
+  ML::default_logger().set_level(verbosity);
   CUML_LOG_DEBUG("Running L-BFGS");
 
   // Evaluate function and compute gradient
@@ -248,6 +237,7 @@ inline OPT_RETCODE min_lbfgs(const LBFGSParam<T>& param,
     step = T(1.0);
   }
   CUML_LOG_WARN("L-BFGS: max iterations reached");
+  *k = param.max_iterations;
   return OPT_MAX_ITERS_REACHED;
 }
 
@@ -278,7 +268,7 @@ inline OPT_RETCODE min_owlqn(const LBFGSParam<T>& param,
                              int* k,
                              SimpleVec<T>& workspace,  // scratch space
                              cudaStream_t stream,
-                             const int verbosity = 0)
+                             const rapids_logger::level_enum verbosity = 0)
 {
   int n                    = x.len;
   const int workspace_size = owlqn_workspace_size(param, n);
@@ -305,7 +295,7 @@ inline OPT_RETCODE min_owlqn(const LBFGSParam<T>& param,
   p_ws += vec_size;
   T* dev_scalar = p_ws;
 
-  ML::Logger::get().setLevel(verbosity);
+  ML::default_logger().set_level(verbosity);
 
   SimpleVec<T> svec, yvec;  // mask vectors
 
@@ -406,6 +396,7 @@ inline OPT_RETCODE min_owlqn(const LBFGSParam<T>& param,
     step = T(1.0);
   }
   CUML_LOG_WARN("QWL-QN: max iterations reached");
+  *k = param.max_iterations;
   return OPT_MAX_ITERS_REACHED;
 }
 /*
@@ -419,7 +410,7 @@ inline int qn_minimize(const raft::handle_t& handle,
                        LossFunction& loss,
                        const T l1,
                        const LBFGSParam<T>& opt_param,
-                       const int verbosity = 0)
+                       const rapids_logger::level_enum verbosity = 0)
 {
   // TODO should the worksapce allocation happen outside?
   cudaStream_t stream = handle.get_stream();

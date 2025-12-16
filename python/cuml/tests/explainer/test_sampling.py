@@ -1,28 +1,15 @@
-# Copyright (c) 2021-2023, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2021-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-from cuml.explainer.sampling import kmeans_sampling
-from cuml.internals.safe_imports import gpu_only_import_from
+import cudf
+import cupy as cp
+import numpy as np
+import pandas as pd
 import pytest
-from cuml.internals.safe_imports import cpu_only_import
-from cuml.internals.safe_imports import gpu_only_import
+from cudf.pandas import LOADED as cudf_pandas_active
+from numba import cuda
 
-cudf = gpu_only_import("cudf")
-cp = gpu_only_import("cupy")
-np = cpu_only_import("numpy")
-pd = cpu_only_import("pandas")
-cuda = gpu_only_import_from("numba", "cuda")
+from cuml.explainer.sampling import kmeans_sampling
 
 
 @pytest.mark.parametrize(
@@ -64,7 +51,7 @@ def test_kmeans_input(input_type):
     elif input_type == "cudf-series":
         cp.testing.assert_array_equal(summary[0].values.tolist(), [23.0, 52.0])
         assert isinstance(summary[0], cudf.Series)
-    elif input_type == "pandas-series":
+    elif input_type == "pandas-series" and not cudf_pandas_active:
         cp.testing.assert_array_equal(
             summary[0].to_numpy().flatten(), [23.0, 52.0]
         )

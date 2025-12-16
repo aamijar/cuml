@@ -1,38 +1,19 @@
-# Copyright (c) 2019-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
-from cuml.internals.safe_imports import cpu_only_import
-from cuml.prims.label import make_monotonic
-from cuml.prims.label import invert_labels
-from cuml.prims.label import check_labels
-
-from cuml.testing.utils import array_equal
-
+import cupy as cp
+import numpy as np
 import pytest
 
-from cuml.internals.safe_imports import gpu_only_import
-
-cp = gpu_only_import("cupy")
-np = cpu_only_import("numpy")
+from cuml.prims.label import check_labels, invert_labels, make_monotonic
+from cuml.testing.utils import array_equal
 
 
 @pytest.mark.parametrize("arr_type", ["np", "cp"])
 @pytest.mark.parametrize("dtype", [cp.int32, cp.int64])
 @pytest.mark.parametrize("copy", [True, False])
 def test_monotonic_validate_invert_labels(arr_type, dtype, copy):
-
     arr = np.array([0, 15, 10, 50, 20, 50], dtype=dtype)
 
     original = arr.copy()

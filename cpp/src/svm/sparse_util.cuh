@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -20,16 +9,21 @@
 #include <raft/core/device_csr_matrix.hpp>
 #include <raft/core/device_resources.hpp>
 #include <raft/core/handle.hpp>
-#include <raft/distance/kernels.cuh>
+#include <raft/linalg/norm.cuh>
 #include <raft/matrix/matrix.cuh>
+#include <raft/sparse/linalg/norm.cuh>
 #include <raft/util/cuda_utils.cuh>
 
 #include <rmm/device_uvector.hpp>
 
+#include <cuda/std/functional>
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 #include <thrust/iterator/constant_iterator.h>
 #include <thrust/transform_scan.h>
+
+#include <cuvs/distance/distance.hpp>
+#include <cuvs/distance/grammian.hpp>
 
 namespace ML {
 namespace SVM {
@@ -50,7 +44,7 @@ namespace SVM {
  */
 template <typename math_t>
 void KernelOp(const raft::handle_t& handle,
-              raft::distance::kernels::GramMatrixBase<math_t>* kernel,
+              cuvs::distance::kernels::GramMatrixBase<math_t>* kernel,
               raft::device_matrix_view<math_t, int, raft::layout_stride> input1,
               raft::device_matrix_view<math_t, int, raft::layout_stride> input2,
               math_t* result,
@@ -81,7 +75,7 @@ void KernelOp(const raft::handle_t& handle,
  */
 template <typename math_t>
 void KernelOp(const raft::handle_t& handle,
-              raft::distance::kernels::GramMatrixBase<math_t>* kernel,
+              cuvs::distance::kernels::GramMatrixBase<math_t>* kernel,
               raft::device_matrix_view<math_t, int, raft::layout_stride> input1,
               math_t* input2,
               int rows2,
@@ -113,7 +107,7 @@ void KernelOp(const raft::handle_t& handle,
  */
 template <typename math_t>
 void KernelOp(const raft::handle_t& handle,
-              raft::distance::kernels::GramMatrixBase<math_t>* kernel,
+              cuvs::distance::kernels::GramMatrixBase<math_t>* kernel,
               math_t* input1,
               int rows1,
               int cols,
@@ -146,7 +140,7 @@ void KernelOp(const raft::handle_t& handle,
  */
 template <typename math_t>
 void KernelOp(const raft::handle_t& handle,
-              raft::distance::kernels::GramMatrixBase<math_t>* kernel,
+              cuvs::distance::kernels::GramMatrixBase<math_t>* kernel,
               raft::device_csr_matrix_view<math_t, int, int, int> input1,
               raft::device_csr_matrix_view<math_t, int, int, int> input2,
               math_t* result,
@@ -178,7 +172,7 @@ void KernelOp(const raft::handle_t& handle,
  */
 template <typename math_t>
 void KernelOp(const raft::handle_t& handle,
-              raft::distance::kernels::GramMatrixBase<math_t>* kernel,
+              cuvs::distance::kernels::GramMatrixBase<math_t>* kernel,
               raft::device_csr_matrix_view<math_t, int, int, int> input1,
               raft::device_matrix_view<math_t, int, raft::layout_stride> input2,
               math_t* result,
@@ -209,7 +203,7 @@ void KernelOp(const raft::handle_t& handle,
  */
 template <typename math_t>
 void KernelOp(const raft::handle_t& handle,
-              raft::distance::kernels::GramMatrixBase<math_t>* kernel,
+              cuvs::distance::kernels::GramMatrixBase<math_t>* kernel,
               raft::device_matrix_view<math_t, int, raft::layout_stride> input1,
               raft::device_csr_matrix_view<math_t, int, int, int> input2,
               math_t* result,
@@ -236,7 +230,7 @@ void KernelOp(const raft::handle_t& handle,
  */
 template <typename math_t>
 void KernelOp(const raft::handle_t& handle,
-              raft::distance::kernels::GramMatrixBase<math_t>* kernel,
+              cuvs::distance::kernels::GramMatrixBase<math_t>* kernel,
               raft::device_csr_matrix_view<math_t, int, int, int> input1,
               math_t* input2,
               int rows2,
@@ -325,7 +319,7 @@ raft::device_csr_matrix_view<math_t, int, int, int> getMatrixBatch(
                         inptr_src + batch_size + 1,
                         thrust::make_constant_iterator(nnz_offset),
                         inptr_tgt,
-                        thrust::minus<int>());
+                        cuda::std::minus<int>());
     }
 
     auto csr_struct_out = raft::make_device_compressed_structure_view<int, int, int>(
@@ -422,13 +416,57 @@ void matrixRowNorm(const raft::handle_t& handle,
   bool is_col_major_contiguous = matrix.stride(0) == 1 && matrix.stride(1) == matrix.extent(0);
   ASSERT(is_row_major_contiguous || is_col_major_contiguous,
          "Dense matrix rowNorm only support contiguous data");
-  raft::linalg::rowNorm(target,
-                        matrix.data_handle(),
-                        matrix.extent(1),  //! cols first arg!
-                        matrix.extent(0),
-                        norm,
-                        is_row_major_contiguous,
-                        handle.get_stream());
+  if (is_row_major_contiguous) {
+    if (norm == raft::linalg::NormType::L2Norm) {
+      raft::linalg::rowNorm<raft::linalg::NormType::L2Norm, true>(
+        target,
+        matrix.data_handle(),
+        matrix.extent(1),  //! cols first arg!
+        matrix.extent(0),
+        handle.get_stream());
+    } else if (norm == raft::linalg::NormType::L1Norm) {
+      raft::linalg::rowNorm<raft::linalg::NormType::L1Norm, true>(
+        target,
+        matrix.data_handle(),
+        matrix.extent(1),  //! cols first arg!
+        matrix.extent(0),
+        handle.get_stream());
+    } else if (norm == raft::linalg::NormType::LinfNorm) {
+      raft::linalg::rowNorm<raft::linalg::NormType::LinfNorm, true>(
+        target,
+        matrix.data_handle(),
+        matrix.extent(1),  //! cols first arg!
+        matrix.extent(0),
+        handle.get_stream());
+    } else {
+      RAFT_FAIL("Unsupported norm type");
+    }
+  } else {
+    if (norm == raft::linalg::NormType::L2Norm) {
+      raft::linalg::rowNorm<raft::linalg::NormType::L2Norm, false>(
+        target,
+        matrix.data_handle(),
+        matrix.extent(1),  //! cols first arg!
+        matrix.extent(0),
+        handle.get_stream());
+    } else if (norm == raft::linalg::NormType::L1Norm) {
+      raft::linalg::rowNorm<raft::linalg::NormType::L1Norm, false>(
+        target,
+        matrix.data_handle(),
+        matrix.extent(1),  //! cols first arg!
+        matrix.extent(0),
+        handle.get_stream());
+    } else if (norm == raft::linalg::NormType::LinfNorm) {
+      raft::linalg::rowNorm<raft::linalg::NormType::LinfNorm, false>(
+        target,
+        matrix.data_handle(),
+        matrix.extent(1),  //! cols first arg!
+        matrix.extent(0),
+        handle.get_stream());
+    } else {
+      RAFT_FAIL("Unsupported norm type");
+    }
+  }
 }
 
 /**
@@ -496,7 +534,7 @@ static void copySparseRowsToDense(const int* indptr,
   RAFT_CUDA_TRY(cudaPeekAtLastError());
 }
 
-struct rowsize : public thrust::unary_function<int, int> {
+struct rowsize {
   const int* indptr_;
   rowsize(const int* indptr) : indptr_(indptr) {}
 
@@ -513,7 +551,7 @@ struct rowsize : public thrust::unary_function<int, int> {
  */
 template <typename math_t, typename LayoutPolicyIn>
 void extractRows(raft::device_matrix_view<math_t, int, LayoutPolicyIn> matrix_in,
-                 raft::device_csr_matrix<math_t, int, int, int> matrix_out,
+                 raft::device_csr_matrix<math_t, int, int, int>& matrix_out,
                  const int* row_indices,
                  int num_indices,
                  const raft::handle_t& handle)
@@ -610,7 +648,7 @@ int computeIndptrForSubset(
                                    row_new_indices_ptr + num_indices,
                                    row_sizes_ptr + 1,
                                    rowsize(indptr_in),
-                                   thrust::plus<int>());
+                                   cuda::std::plus<int>());
 
   // retrieve nnz from indptr_in[num_indices]
   int nnz;
@@ -763,13 +801,13 @@ void extractRows(raft::device_csr_matrix_view<math_t, int, int, int> matrix_in,
 
   // allocate indptr
   auto* rmm_alloc = rmm::mr::get_current_device_resource();
-  *indptr_out     = (int*)rmm_alloc->allocate((num_indices + 1) * sizeof(int), stream);
+  *indptr_out     = (int*)rmm_alloc->allocate(stream, (num_indices + 1) * sizeof(int));
 
   *nnz = computeIndptrForSubset(indptr_in, *indptr_out, row_indices, num_indices, stream);
 
   // allocate indices, data
-  *indices_out = (int*)rmm_alloc->allocate(*nnz * sizeof(int), stream);
-  *data_out    = (math_t*)rmm_alloc->allocate(*nnz * sizeof(math_t), stream);
+  *indices_out = (int*)rmm_alloc->allocate(stream, *nnz * sizeof(int));
+  *data_out    = (math_t*)rmm_alloc->allocate(stream, *nnz * sizeof(math_t));
 
   // copy with 1 warp per row for now, blocksize 256
   const dim3 bs(32, 8, 1);

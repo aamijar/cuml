@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2018-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -61,14 +50,28 @@ int qn_fit(const raft::handle_t& handle,
   if (l2 == 0) {
     GLMWithData<T, LossFunction> lossWith(&loss, X, y, Z);
 
-    return qn_minimize(handle, w0, fx, num_iters, lossWith, l1, opt_param, pams.verbose);
+    return qn_minimize(handle,
+                       w0,
+                       fx,
+                       num_iters,
+                       lossWith,
+                       l1,
+                       opt_param,
+                       static_cast<rapids_logger::level_enum>(pams.verbose));
 
   } else {
     Tikhonov<T> reg(l2);
     RegularizedGLM<T, LossFunction, decltype(reg)> obj(&loss, &reg);
     GLMWithData<T, decltype(obj)> lossWith(&obj, X, y, Z);
 
-    return qn_minimize(handle, w0, fx, num_iters, lossWith, l1, opt_param, pams.verbose);
+    return qn_minimize(handle,
+                       w0,
+                       fx,
+                       num_iters,
+                       lossWith,
+                       l1,
+                       opt_param,
+                       static_cast<rapids_logger::level_enum>(pams.verbose));
   }
 }
 
@@ -259,8 +262,7 @@ void qn_predict(
 
   if (is_class) {
     if (C == 2) {
-      P.assign_unary(
-        Z, [] __device__(const T z) { return z > 0.0 ? T(1) : T(0); }, stream);
+      P.assign_unary(Z, [] __device__(const T z) { return z > 0.0 ? T(1) : T(0); }, stream);
     } else {
       raft::matrix::argmax(Z.data, C, X.m, preds, stream);
     }

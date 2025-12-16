@@ -1,32 +1,20 @@
-# Copyright (c) 2019-2023, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 
-from sklearn.utils import check_random_state
-from sklearn.decomposition import TruncatedSVD as skTSVD
+import numpy as np
+import pytest
 from sklearn.datasets import make_blobs
+from sklearn.decomposition import TruncatedSVD as skTSVD
+from sklearn.utils import check_random_state
+
+from cuml import TruncatedSVD as cuTSVD
 from cuml.testing.utils import (
     array_equal,
-    unit_param,
+    get_handle,
     quality_param,
     stress_param,
+    unit_param,
 )
-from cuml.testing.utils import get_handle
-from cuml import TruncatedSVD as cuTSVD
-import pytest
-from cuml.internals.safe_imports import cpu_only_import
-
-np = cpu_only_import("numpy")
 
 
 @pytest.mark.parametrize("datatype", [np.float32, np.float64])
@@ -35,13 +23,12 @@ np = cpu_only_import("numpy")
     "name", [unit_param(None), quality_param("random"), stress_param("blobs")]
 )
 def test_tsvd_fit(datatype, name, use_handle):
-
     if name == "blobs":
         X, y = make_blobs(n_samples=500000, n_features=1000, random_state=0)
 
     elif name == "random":
         pytest.skip(
-            "fails when using random dataset " "used by sklearn for testing"
+            "fails when using random dataset used by sklearn for testing"
         )
         shape = 5000, 100
         rng = check_random_state(42)
@@ -68,12 +55,11 @@ def test_tsvd_fit(datatype, name, use_handle):
             "components_",
             "explained_variance_ratio_",
         ]:
-            with_sign = False if attr in ["components_"] else True
             assert array_equal(
                 getattr(cutsvd, attr),
                 getattr(sktsvd, attr),
                 0.4,
-                with_sign=with_sign,
+                with_sign=True,
             )
 
 
@@ -88,7 +74,7 @@ def test_tsvd_fit_transform(datatype, name, use_handle):
 
     elif name == "random":
         pytest.skip(
-            "fails when using random dataset " "used by sklearn for testing"
+            "fails when using random dataset used by sklearn for testing"
         )
         shape = 5000, 100
         rng = check_random_state(42)
@@ -119,14 +105,13 @@ def test_tsvd_fit_transform(datatype, name, use_handle):
     "name", [unit_param(None), quality_param("random"), stress_param("blobs")]
 )
 def test_tsvd_inverse_transform(datatype, name, use_handle):
-
     if name == "blobs":
         pytest.skip("fails when using blobs dataset")
         X, y = make_blobs(n_samples=500000, n_features=1000, random_state=0)
 
     elif name == "random":
         pytest.skip(
-            "fails when using random dataset " "used by sklearn for testing"
+            "fails when using random dataset used by sklearn for testing"
         )
         shape = 5000, 100
         rng = check_random_state(42)

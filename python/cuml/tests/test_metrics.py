@@ -1,107 +1,77 @@
 #
-# Copyright (c) 2021-2024, NVIDIA CORPORATION.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-FileCopyrightText: Copyright (c) 2021-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
 
 import platform
-from cuml.metrics.cluster import v_measure_score
-from sklearn.metrics.cluster import v_measure_score as sklearn_v_measure_score
+import random
+from itertools import chain, combinations_with_replacement, permutations
+
+import cudf
+import cupy as cp
+import cupyx
+import numpy as np
+import pytest
+import scipy.sparse
+import sklearn.metrics
+from numba import cuda
+from numpy.testing import assert_almost_equal
+from scipy.spatial import distance as scipy_pairwise_distances
 from scipy.special import rel_entr as scipy_kl_divergence
+from scipy.stats import entropy as sp_entropy
+from sklearn import preprocessing
+from sklearn.datasets import make_blobs, make_classification
+from sklearn.metrics import confusion_matrix as sk_confusion_matrix
+from sklearn.metrics import hinge_loss as sk_hinge
+from sklearn.metrics import log_loss as sklearn_log_loss
 from sklearn.metrics import pairwise_distances as sklearn_pairwise_distances
-from cuml.metrics import (
-    pairwise_distances,
-    sparse_pairwise_distances,
-    PAIRWISE_DISTANCE_METRICS,
-    PAIRWISE_DISTANCE_SPARSE_METRICS,
-)
 from sklearn.metrics import (
     precision_recall_curve as sklearn_precision_recall_curve,
 )
 from sklearn.metrics import roc_auc_score as sklearn_roc_auc_score
-from cuml.metrics import log_loss
-from cuml.metrics import precision_recall_curve
-from cuml.metrics import roc_auc_score
-from cuml.common.sparsefuncs import csr_row_normalize_l1
-from cuml.common import has_scipy
-from sklearn.metrics import mean_squared_log_error as sklearn_msle
-from sklearn.metrics import mean_absolute_error as sklearn_mae
-from cuml.metrics import confusion_matrix
-from sklearn.metrics import confusion_matrix as sk_confusion_matrix
-from sklearn.metrics import mean_squared_error as sklearn_mse
-from cuml.metrics.regression import (
-    mean_squared_error,
-    mean_squared_log_error,
-    mean_absolute_error,
-)
-from cuml.model_selection import train_test_split
-from cuml.metrics.cluster import entropy
-from cuml.metrics import kl_divergence as cu_kl_divergence
-from cuml.metrics import hinge_loss as cuml_hinge
-from cuml import LogisticRegression as cu_log
-from sklearn import preprocessing
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics.cluster import silhouette_samples as sk_silhouette_samples
-from sklearn.metrics.cluster import silhouette_score as sk_silhouette_score
-from sklearn.metrics.cluster import mutual_info_score as sk_mutual_info_score
+from sklearn.metrics.cluster import adjusted_rand_score as sk_ars
 from sklearn.metrics.cluster import completeness_score as sk_completeness_score
 from sklearn.metrics.cluster import homogeneity_score as sk_homogeneity_score
-from sklearn.metrics.cluster import adjusted_rand_score as sk_ars
-from sklearn.metrics import log_loss as sklearn_log_loss
-from sklearn.metrics import accuracy_score as sk_acc_score
-from sklearn.datasets import make_classification, make_blobs
-from sklearn.metrics import hinge_loss as sk_hinge
-from cuml.internals.safe_imports import cpu_only_import_from
-from cuml.internals.safe_imports import gpu_only_import_from
-from cuml.testing.utils import (
-    get_handle,
-    get_pattern,
-    array_equal,
-    unit_param,
-    quality_param,
-    stress_param,
-    generate_random_labels,
-    score_labeling_with_handle,
-)
-from cuml.metrics.cluster import silhouette_samples as cu_silhouette_samples
-from cuml.metrics.cluster import silhouette_score as cu_silhouette_score
-from cuml.metrics import accuracy_score as cu_acc_score
-from cuml.metrics.cluster import adjusted_rand_score as cu_ars
-from cuml.ensemble import RandomForestClassifier as curfc
-from cuml.internals.safe_imports import cpu_only_import
-import pytest
-
-import random
-from itertools import chain, permutations
-from functools import partial
+from sklearn.metrics.cluster import mutual_info_score as sk_mutual_info_score
+from sklearn.metrics.cluster import silhouette_samples as sk_silhouette_samples
+from sklearn.metrics.cluster import silhouette_score as sk_silhouette_score
+from sklearn.metrics.cluster import v_measure_score as sklearn_v_measure_score
+from sklearn.preprocessing import StandardScaler
 
 import cuml
 import cuml.internals.logger as logger
-from cuml.internals.safe_imports import gpu_only_import
-
-cp = gpu_only_import("cupy")
-cupyx = gpu_only_import("cupyx")
-np = cpu_only_import("numpy")
-cudf = gpu_only_import("cudf")
-
-
-cuda = gpu_only_import_from("numba", "cuda")
-assert_almost_equal = cpu_only_import_from(
-    "numpy.testing", "assert_almost_equal"
+from cuml import LogisticRegression as cu_log
+from cuml.common.sparsefuncs import csr_row_normalize_l1
+from cuml.metrics import (
+    PAIRWISE_DISTANCE_METRICS,
+    PAIRWISE_DISTANCE_SPARSE_METRICS,
+    confusion_matrix,
 )
-
-
-scipy_pairwise_distances = cpu_only_import_from("scipy.spatial", "distance")
+from cuml.metrics import hinge_loss as cuml_hinge
+from cuml.metrics import kl_divergence as cu_kl_divergence
+from cuml.metrics import (
+    log_loss,
+    pairwise_distances,
+    precision_recall_curve,
+    roc_auc_score,
+    sparse_pairwise_distances,
+)
+from cuml.metrics.cluster import adjusted_rand_score as cu_ars
+from cuml.metrics.cluster import entropy
+from cuml.metrics.cluster import silhouette_samples as cu_silhouette_samples
+from cuml.metrics.cluster import silhouette_score as cu_silhouette_score
+from cuml.metrics.cluster import v_measure_score
+from cuml.model_selection import train_test_split
+from cuml.testing.datasets import make_pattern
+from cuml.testing.utils import (
+    array_equal,
+    generate_random_labels,
+    get_handle,
+    quality_param,
+    score_labeling_with_handle,
+    stress_param,
+    unit_param,
+)
 
 IS_ARM = platform.processor() == "aarch64"
 
@@ -109,7 +79,7 @@ IS_ARM = platform.processor() == "aarch64"
 @pytest.fixture(scope="module")
 def random_state():
     random_state = random.randint(0, 10**6)
-    with logger.set_level(logger.level_debug):
+    with logger.set_level(logger.level_enum.debug):
         logger.debug("Random seed: {}".format(random_state))
     return random_state
 
@@ -147,29 +117,16 @@ def labeled_clusters(request, random_state):
     )
 
 
-@pytest.mark.parametrize("datatype", [np.float32, np.float64])
-@pytest.mark.parametrize("use_handle", [True, False])
-def test_r2_score(datatype, use_handle):
-    a = np.array([0.1, 0.2, 0.3, 0.4, 0.5], dtype=datatype)
-    b = np.array([0.12, 0.22, 0.32, 0.42, 0.52], dtype=datatype)
-
-    a_dev = cuda.to_device(a)
-    b_dev = cuda.to_device(b)
-
-    handle, stream = get_handle(use_handle)
-
-    score = cuml.metrics.r2_score(a_dev, b_dev, handle=handle)
-
-    np.testing.assert_almost_equal(score, 0.98, decimal=7)
-
-
+# Ignore FutureWarning: Using `__dataframe__` is deprecated
+@pytest.mark.filterwarnings("ignore::FutureWarning")
 def test_sklearn_search():
     """Test ensures scoring function works with sklearn machinery"""
-    import numpy as np
-    from cuml import Ridge as cumlRidge
     import cudf
+    import numpy as np
     from sklearn import datasets
-    from sklearn.model_selection import train_test_split, GridSearchCV
+    from sklearn.model_selection import GridSearchCV, train_test_split
+
+    from cuml import Ridge as cumlRidge
 
     diabetes = datasets.load_diabetes()
     X_train, X_test, y_train, y_test = train_test_split(
@@ -182,13 +139,11 @@ def test_sklearn_search():
 
     alpha = np.array([1.0])
     fit_intercept = True
-    normalize = False
 
     params = {"alpha": np.logspace(-3, -1, 10)}
     cu_clf = cumlRidge(
         alpha=alpha,
         fit_intercept=fit_intercept,
-        normalize=normalize,
         solver="eig",
     )
 
@@ -203,62 +158,104 @@ def test_sklearn_search():
 
 
 @pytest.mark.parametrize(
-    "nrows", [unit_param(30), quality_param(5000), stress_param(500000)]
+    "true_kind, pred_kind, true_dtype, pred_dtype",
+    [
+        ("cupy", "cupy", "int32", "int32"),
+        ("cupy", "numpy", "int64", "int32"),
+        ("numpy", "cupy", "float16", "float32"),
+        ("cudf", "cudf", "int32", "int64"),
+        ("numpy", "cudf", "str", "str"),
+        ("numpy", "cudf", "str", "category"),
+        ("cudf", "numpy", "category", "str"),
+        ("cudf", "cudf", "str", "str"),
+        ("cudf", "cudf", "str", "category"),
+        ("cudf", "cudf", "category", "str"),
+        ("cudf", "cudf", "category", "category"),
+    ],
 )
 @pytest.mark.parametrize(
-    "ncols", [unit_param(10), quality_param(100), stress_param(200)]
+    "weight_kind, weight_dtype",
+    [(None, None), ("cupy", "float32"), ("numpy", "float64")],
 )
-@pytest.mark.parametrize(
-    "n_info", [unit_param(7), quality_param(50), stress_param(100)]
-)
-@pytest.mark.parametrize("datatype", [np.float32])
-def test_accuracy(nrows, ncols, n_info, datatype):
+@pytest.mark.parametrize("normalize", [True, False])
+def test_accuracy_score(
+    true_kind,
+    pred_kind,
+    true_dtype,
+    pred_dtype,
+    weight_kind,
+    weight_dtype,
+    normalize,
+):
+    N = 30
+    rng = np.random.RandomState(42)
+    np_true = rng.randint(0, 3, N)
+    np_pred = (rng.randint(0, 2, N) + np_true) % 3
+    np_weight = rng.random(N).astype(weight_dtype) if weight_kind else None
+    if true_dtype in ("str", "category"):
+        assert pred_dtype in ("str", "category")
+        labels = np.array(["a", "b", "c"], dtype="object")
+        np_true = labels.take(np_true)
+        np_pred = labels.take(np_pred)
+    else:
+        np_true = np_true.astype(true_dtype)
+        np_pred = np_pred.astype(pred_dtype)
 
-    use_handle = True
-    train_rows = np.int32(nrows * 0.8)
-    X, y = make_classification(
-        n_samples=nrows,
-        n_features=ncols,
-        n_clusters_per_class=1,
-        n_informative=n_info,
-        random_state=123,
-        n_classes=5,
+    def convert(x, kind, dtype):
+        if kind == "cupy":
+            return cp.array(x, dtype=dtype)
+        elif kind == "cudf":
+            return cudf.Series(x).astype(dtype)
+        else:
+            return x
+
+    true = convert(np_true, true_kind, true_dtype)
+    pred = convert(np_pred, pred_kind, true_dtype)
+    weight = (
+        convert(np_weight, weight_kind, weight_dtype) if weight_kind else None
     )
 
-    X_test = np.asarray(X[train_rows:, 0:]).astype(datatype)
-    y_test = np.asarray(
-        y[
-            train_rows:,
-        ]
-    ).astype(np.int32)
-    X_train = np.asarray(X[0:train_rows, :]).astype(datatype)
-    y_train = np.asarray(
-        y[
-            0:train_rows,
-        ]
-    ).astype(np.int32)
-    # Create a handle for the cuml model
-    handle, stream = get_handle(use_handle, n_streams=8)
-
-    # Initialize, fit and predict using cuML's
-    # random forest classification model
-    cuml_model = curfc(
-        max_features=1.0,
-        n_bins=8,
-        split_criterion=0,
-        min_samples_leaf=2,
-        n_estimators=40,
-        handle=handle,
-        max_leaves=-1,
-        max_depth=16,
+    sol = sklearn.metrics.accuracy_score(
+        np_true, np_pred, sample_weight=np_weight, normalize=normalize
     )
+    res = cuml.metrics.accuracy_score(
+        true, pred, sample_weight=weight, normalize=normalize
+    )
+    assert isinstance(res, float)
+    np.testing.assert_allclose(res, sol)
 
-    cuml_model.fit(X_train, y_train)
-    cu_predict = cuml_model.predict(X_test)
-    cu_acc = cu_acc_score(y_test, cu_predict)
-    cu_acc_using_sk = sk_acc_score(y_test, cu_predict)
-    # compare the accuracy of the two models
-    assert array_equal(cu_acc, cu_acc_using_sk)
+
+@pytest.mark.parametrize("true_kind", ["pandas", "cudf"])
+@pytest.mark.parametrize("pred_kind", ["pandas", "cudf"])
+def test_accuracy_score_index_unaligned(true_kind, pred_kind):
+    """Check that accuracy_score ignores the index of the input."""
+    pd = pytest.importorskip("pandas")
+    true_ns = pd if true_kind == "pandas" else cudf
+    pred_ns = pd if pred_kind == "pandas" else cudf
+
+    true = true_ns.Series([1, 2, 1, 2], index=[10, 2, 4, 6])
+    pred = pred_ns.Series([1, 2, 2, 1], index=[2, 4, 6, 8])
+    assert cuml.metrics.accuracy_score(true, pred) == 0.5
+
+
+def test_accuracy_score_errors():
+    arr_3 = np.array([1, 2, 3])
+    arr_4 = np.array([1, 2, 3, 4])
+    arr_3x3 = np.ones((3, 3))
+
+    with pytest.raises(ValueError, match="Expected 3 rows"):
+        cuml.metrics.accuracy_score(arr_3, arr_4)
+
+    with pytest.raises(ValueError, match="Expected 3 rows"):
+        cuml.metrics.accuracy_score(arr_3, arr_3, sample_weight=arr_4)
+
+    for true, pred, sw in [
+        (arr_3x3, arr_3, None),
+        (arr_3, arr_3x3, None),
+        (arr_3, arr_3, arr_3x3),
+    ]:
+        with pytest.raises(ValueError, match="Expected 1 column"):
+            cuml.metrics.accuracy_score(true, pred, sample_weight=sw)
 
 
 dataset_names = ["noisy_circles", "noisy_moons", "aniso"] + [
@@ -271,7 +268,6 @@ dataset_names = ["noisy_circles", "noisy_moons", "aniso"] + [
     "nrows", [unit_param(20), quality_param(5000), stress_param(500000)]
 )
 def test_rand_index_score(name, nrows):
-
     default_base = {
         "quantile": 0.3,
         "eps": 0.3,
@@ -281,12 +277,12 @@ def test_rand_index_score(name, nrows):
         "n_clusters": 3,
     }
 
-    pat = get_pattern(name, nrows)
+    pat = make_pattern(name, nrows)
 
     params = default_base.copy()
     params.update(pat[1])
 
-    cuml_kmeans = cuml.KMeans(n_clusters=params["n_clusters"])
+    cuml_kmeans = cuml.KMeans(n_clusters=params["n_clusters"], n_init="auto")
 
     X, y = pat[0]
 
@@ -300,6 +296,21 @@ def test_rand_index_score(name, nrows):
     assert array_equal(cu_score, cu_score_using_sk)
 
 
+@pytest.mark.parametrize("nrows", [0, 1, 2])
+def test_adjusted_rand_score_small(nrows):
+    arrs = [
+        np.array(a, dtype="int32")
+        for a in combinations_with_replacement(range(2), nrows)
+    ]
+    for y in arrs:
+        for y_pred in arrs:
+            res = cu_ars(y, y_pred)
+            sol = sk_ars(y, y_pred)
+            assert res == sol, (
+                f"adjusted_rand_score({y}, {y_pred}) = {res}, expected {sol}"
+            )
+
+
 @pytest.mark.parametrize(
     "metric", ("cityblock", "cosine", "euclidean", "l1", "sqeuclidean")
 )
@@ -310,7 +321,6 @@ def test_rand_index_score(name, nrows):
     "github.com/rapidsai/cuml/issues/5025",
 )
 def test_silhouette_score_batched(metric, chunk_divider, labeled_clusters):
-
     X, labels = labeled_clusters
     cuml_score = cu_silhouette_score(
         X, labels, metric=metric, chunksize=int(X.shape[0] / chunk_divider)
@@ -548,17 +558,6 @@ def test_completeness_score_big_array(use_handle, input_range):
     np.testing.assert_almost_equal(score, ref, decimal=4)
 
 
-def test_regression_metrics():
-    y_true = np.arange(50, dtype=int)
-    y_pred = y_true + 1
-    assert_almost_equal(mean_squared_error(y_true, y_pred), 1.0)
-    assert_almost_equal(
-        mean_squared_log_error(y_true, y_pred),
-        mean_squared_error(np.log(1 + y_true), np.log(1 + y_pred)),
-    )
-    assert_almost_equal(mean_absolute_error(y_true, y_pred), 1.0)
-
-
 @pytest.mark.parametrize("n_samples", [50, stress_param(500000)])
 @pytest.mark.parametrize(
     "y_dtype", [np.int32, np.int64, np.float32, np.float64]
@@ -566,42 +565,191 @@ def test_regression_metrics():
 @pytest.mark.parametrize(
     "pred_dtype", [np.int32, np.int64, np.float32, np.float64]
 )
-@pytest.mark.parametrize("function", ["mse", "mae", "msle"])
-def test_regression_metrics_random_with_mixed_dtypes(
-    n_samples, y_dtype, pred_dtype, function
-):
-    y_true, _, _, _ = generate_random_labels(
-        lambda rng: rng.randint(0, 1000, n_samples).astype(y_dtype)
+@pytest.mark.parametrize(
+    "func",
+    [
+        "r2_score",
+        "mean_squared_error",
+        "mean_absolute_error",
+        "median_absolute_error",
+        "mean_squared_log_error",
+    ],
+)
+def test_regression_metrics(n_samples, y_dtype, pred_dtype, func):
+    rng = np.random.RandomState(42)
+    y_true = rng.randint(10, 1000, n_samples).astype(y_dtype)
+    y_pred = (rng.randint(-5, 5, n_samples) + y_true).astype(pred_dtype)
+
+    cu_metric = getattr(cuml.metrics, func)
+    sk_metric = getattr(sklearn.metrics, func)
+
+    res = cu_metric(y_true, y_pred)
+    ref = sk_metric(y_true, y_pred)
+    assert_almost_equal(res, ref)
+
+
+@pytest.mark.parametrize(
+    "func",
+    [
+        "r2_score",
+        "mean_squared_error",
+        "mean_absolute_error",
+        "median_absolute_error",
+        "mean_squared_log_error",
+    ],
+)
+def test_regression_metrics_cudf(func):
+    a = cudf.Series([1.1, 2.2, 3.3, 4.4])
+    b = cudf.Series([0.1, 0.2, 0.3, 0.4])
+
+    cu_metric = getattr(cuml.metrics, func)
+    err1 = cu_metric(a, b)
+    err2 = cu_metric(a.values, b.values)
+    assert err1 == err2
+
+
+@pytest.mark.parametrize(
+    "func",
+    [
+        "r2_score",
+        "mean_squared_error",
+        "mean_absolute_error",
+        "median_absolute_error",
+        "mean_squared_log_error",
+    ],
+)
+def test_regression_metrics_zero_error(func):
+    y_true = y_pred = np.ones(3)
+
+    cu_metric = getattr(cuml.metrics, func)
+    sk_metric = getattr(sklearn.metrics, func)
+
+    res = cu_metric(y_true, y_pred)
+    ref = sk_metric(y_true, y_pred)
+    assert_almost_equal(res, ref)
+
+
+@pytest.mark.parametrize(
+    "func",
+    [
+        "r2_score",
+        "mean_squared_error",
+        "mean_absolute_error",
+        "median_absolute_error",
+        "mean_squared_log_error",
+    ],
+)
+def test_regression_metrics_multioutput(func):
+    y_true = np.array([[1, 0, 0, 1], [0, 1, 1, 1], [1, 1, 0, 1]])
+    y_pred = np.array([[0, 0, 0, 1], [1, 0, 1, 1], [0, 0, 0, 1]])
+
+    cu_metric = getattr(cuml.metrics, func)
+    sk_metric = getattr(sklearn.metrics, func)
+
+    res = cu_metric(y_true, y_pred)
+    sol = sk_metric(y_true, y_pred)
+    assert_almost_equal(res, sol)
+
+
+@pytest.mark.parametrize(
+    "func",
+    [
+        "r2_score",
+        "mean_squared_error",
+        "mean_absolute_error",
+        "median_absolute_error",
+        "mean_squared_log_error",
+    ],
+)
+def test_regression_metrics_multioutput_raw_values(func):
+    y_true = np.array([[1, 2], [2.5, 1], [4.5, 3], [5, 7]], dtype=float)
+    y_pred = np.array([[1, 1], [2, 1], [5, 4], [5, 6.5]], dtype=float)
+
+    cu_metric = getattr(cuml.metrics, func)
+    sk_metric = getattr(sklearn.metrics, func)
+
+    res = cu_metric(y_true, y_pred, multioutput="raw_values")
+    sol = sk_metric(y_true, y_pred, multioutput="raw_values")
+    cp.testing.assert_array_almost_equal(res, sol)
+
+
+@pytest.mark.parametrize(
+    "func",
+    [
+        "r2_score",
+        "mean_squared_error",
+        "mean_absolute_error",
+        "median_absolute_error",
+        "mean_squared_log_error",
+    ],
+)
+def test_regression_metrics_multioutput_custom_weights(func):
+    y_true = np.array([[1, 2], [2.5, 1], [4.5, 3], [5, 7]], dtype=float)
+    y_pred = np.array([[1, 1], [2, 1], [5, 4], [5, 6.5]], dtype=float)
+    multioutput = np.array([0.3, 0.7])
+
+    cu_metric = getattr(cuml.metrics, func)
+    sk_metric = getattr(sklearn.metrics, func)
+
+    res = cu_metric(y_true, y_pred, multioutput=multioutput)
+    sol = sk_metric(y_true, y_pred, multioutput=multioutput)
+    assert_almost_equal(res, sol)
+
+
+@pytest.mark.parametrize(
+    "func",
+    [
+        "r2_score",
+        "mean_squared_error",
+        "mean_absolute_error",
+        "median_absolute_error",
+        "mean_squared_log_error",
+    ],
+)
+@pytest.mark.parametrize("multioutput", [False, True])
+def test_regression_metrics_sample_weight(multioutput, func):
+    y_true = np.array([[1, 2], [2.5, 1], [4.5, 3], [5, 7]], dtype=float)
+    y_pred = np.array([[1, 1], [2, 1], [5, 4], [5, 6.5]], dtype=float)
+    if not multioutput:
+        y_true = y_true[:, 0]
+        y_pred = y_pred[:, 0]
+    weights = np.array([0.2, 0.25, 0.4, 0.15], dtype=float)
+
+    cu_metric = getattr(cuml.metrics, func)
+    sk_metric = getattr(sklearn.metrics, func)
+
+    res = cu_metric(y_true, y_pred, sample_weight=weights)
+    sol = sk_metric(y_true, y_pred, sample_weight=weights)
+    assert_almost_equal(res, sol)
+
+
+@pytest.mark.parametrize("true, pred", [(1, 1), (0, 0)])
+def test_r2_score_force_finite(true, pred):
+    y_true = np.array([true] * 3, dtype="float64")
+    y_pred = np.array([pred] * 3, dtype="float64")
+
+    res = cuml.metrics.r2_score(y_true, y_pred)
+    sol = sklearn.metrics.r2_score(y_true, y_pred)
+    assert_almost_equal(res, sol)
+
+    with pytest.warns(RuntimeWarning):
+        res = cuml.metrics.r2_score(y_true, y_pred, force_finite=False)
+        sol = sklearn.metrics.r2_score(y_true, y_pred, force_finite=False)
+
+    assert_almost_equal(res, sol)
+
+
+def test_r2_score_multioutput_variance_weighted():
+    y_true = np.array([[1, 2], [2.5, 1], [4.5, 3], [5, 7]], dtype=float)
+    y_pred = np.array([[1, 1], [2, 1], [5, 4], [5, 6.5]], dtype=float)
+
+    res = cuml.metrics.r2_score(
+        y_true, y_pred, multioutput="variance_weighted"
     )
-
-    y_pred, _, _, _ = generate_random_labels(
-        lambda rng: rng.randint(0, 1000, n_samples).astype(pred_dtype)
+    sol = sklearn.metrics.r2_score(
+        y_true, y_pred, multioutput="variance_weighted"
     )
-
-    cuml_reg, sklearn_reg = {
-        "mse": (mean_squared_error, sklearn_mse),
-        "mae": (mean_absolute_error, sklearn_mae),
-        "msle": (mean_squared_log_error, sklearn_msle),
-    }[function]
-
-    res = cuml_reg(y_true, y_pred, multioutput="raw_values")
-    ref = sklearn_reg(y_true, y_pred, multioutput="raw_values")
-    cp.testing.assert_array_almost_equal(res, ref, decimal=2)
-
-
-@pytest.mark.parametrize("function", ["mse", "mse_not_squared", "mae", "msle"])
-def test_regression_metrics_at_limits(function):
-    y_true = np.array([0.0], dtype=float)
-    y_pred = np.array([0.0], dtype=float)
-
-    cuml_reg = {
-        "mse": mean_squared_error,
-        "mse_not_squared": partial(mean_squared_error, squared=False),
-        "mae": mean_absolute_error,
-        "msle": mean_squared_log_error,
-    }[function]
-
-    assert_almost_equal(cuml_reg(y_true, y_pred), 0.00, decimal=2)
+    assert_almost_equal(res, sol)
 
 
 @pytest.mark.parametrize(
@@ -612,89 +760,11 @@ def test_regression_metrics_at_limits(function):
         ([1.0, -2.0, 3.0], [1.0, 2.0, 3.0]),
     ],
 )
-def test_mean_squared_log_error_exceptions(inputs):
-    with pytest.raises(ValueError):
-        mean_squared_log_error(np.array(inputs[0]), np.array(inputs[1]))
-
-
-def test_multioutput_regression():
-    y_true = np.array([[1, 0, 0, 1], [0, 1, 1, 1], [1, 1, 0, 1]])
-    y_pred = np.array([[0, 0, 0, 1], [1, 0, 1, 1], [0, 0, 0, 1]])
-
-    error = mean_squared_error(y_true, y_pred)
-    assert_almost_equal(error, (1.0 + 2.0 / 3) / 4.0)
-
-    error = mean_squared_error(y_true, y_pred, squared=False)
-    assert_almost_equal(error, 0.645, decimal=2)
-
-    error = mean_squared_log_error(y_true, y_pred)
-    assert_almost_equal(error, 0.200, decimal=2)
-
-    # mean_absolute_error and mean_squared_error are equal because
-    # it is a binary problem.
-    error = mean_absolute_error(y_true, y_pred)
-    assert_almost_equal(error, (1.0 + 2.0 / 3) / 4.0)
-
-
-def test_regression_metrics_multioutput_array():
-    y_true = np.array([[1, 2], [2.5, -1], [4.5, 3], [5, 7]], dtype=float)
-    y_pred = np.array([[1, 1], [2, -1], [5, 4], [5, 6.5]], dtype=float)
-
-    mse = mean_squared_error(y_true, y_pred, multioutput="raw_values")
-    mae = mean_absolute_error(y_true, y_pred, multioutput="raw_values")
-
-    cp.testing.assert_array_almost_equal(mse, [0.125, 0.5625], decimal=2)
-    cp.testing.assert_array_almost_equal(mae, [0.25, 0.625], decimal=2)
-
-    weights = np.array([0.4, 0.6], dtype=float)
-    msew = mean_squared_error(y_true, y_pred, multioutput=weights)
-    rmsew = mean_squared_error(
-        y_true, y_pred, multioutput=weights, squared=False
-    )
-    assert_almost_equal(msew, 0.39, decimal=2)
-    assert_almost_equal(rmsew, 0.62, decimal=2)
-
-    y_true = np.array([[0, 0]] * 4, dtype=int)
-    y_pred = np.array([[1, 1]] * 4, dtype=int)
-    mse = mean_squared_error(y_true, y_pred, multioutput="raw_values")
-    mae = mean_absolute_error(y_true, y_pred, multioutput="raw_values")
-    cp.testing.assert_array_almost_equal(mse, [1.0, 1.0], decimal=2)
-    cp.testing.assert_array_almost_equal(mae, [1.0, 1.0], decimal=2)
-
-    y_true = np.array([[0.5, 1], [1, 2], [7, 6]])
-    y_pred = np.array([[0.5, 2], [1, 2.5], [8, 8]])
-    msle = mean_squared_log_error(y_true, y_pred, multioutput="raw_values")
-    msle2 = mean_squared_error(
-        np.log(1 + y_true), np.log(1 + y_pred), multioutput="raw_values"
-    )
-    cp.testing.assert_array_almost_equal(msle, msle2, decimal=2)
-
-
-@pytest.mark.parametrize("function", ["mse", "mae"])
-def test_regression_metrics_custom_weights(function):
-    y_true = np.array([1, 2, 2.5, -1], dtype=float)
-    y_pred = np.array([1, 1, 2, -1], dtype=float)
-    weights = np.array([0.2, 0.25, 0.4, 0.15], dtype=float)
-
-    cuml_reg, sklearn_reg = {
-        "mse": (mean_squared_error, sklearn_mse),
-        "mae": (mean_absolute_error, sklearn_mae),
-    }[function]
-
-    score = cuml_reg(y_true, y_pred, sample_weight=weights)
-    ref = sklearn_reg(y_true, y_pred, sample_weight=weights)
-    assert_almost_equal(score, ref, decimal=2)
-
-
-def test_mse_vs_msle_custom_weights():
-    y_true = np.array([0.5, 2, 7, 6], dtype=float)
-    y_pred = np.array([0.5, 1, 8, 8], dtype=float)
-    weights = np.array([0.2, 0.25, 0.4, 0.15], dtype=float)
-    msle = mean_squared_log_error(y_true, y_pred, sample_weight=weights)
-    msle2 = mean_squared_error(
-        np.log(1 + y_true), np.log(1 + y_pred), sample_weight=weights
-    )
-    assert_almost_equal(msle, msle2, decimal=2)
+def test_mean_squared_log_error_negative_values(inputs):
+    with pytest.raises(ValueError, match="targets contain negative values"):
+        cuml.metrics.mean_squared_log_error(
+            np.array(inputs[0]), np.array(inputs[1])
+        )
 
 
 @pytest.mark.parametrize("use_handle", [True, False])
@@ -717,11 +787,6 @@ def test_entropy(use_handle):
 @pytest.mark.parametrize("base", [None, 2, 10, 50])
 @pytest.mark.parametrize("use_handle", [True, False])
 def test_entropy_random(n_samples, base, use_handle):
-    if has_scipy():
-        from scipy.stats import entropy as sp_entropy
-    else:
-        pytest.skip("Skipping test_entropy_random because Scipy is missing")
-
     handle, stream = get_handle(use_handle)
 
     clustering, _, _, _ = generate_random_labels(
@@ -755,6 +820,9 @@ def test_confusion_matrix_binary():
     cp.testing.assert_array_equal(ref, cp.array([tn, fp, fn, tp]))
 
 
+@pytest.mark.filterwarnings(
+    "ignore:The number of unique classes is greater than 50% of the number of samples.*:UserWarning"
+)
 @pytest.mark.parametrize("n_samples", [50, 3000, stress_param(500000)])
 @pytest.mark.parametrize("dtype", [np.int32, np.int64, np.float32])
 @pytest.mark.parametrize("problem_type", ["binary", "multiclass"])
@@ -833,7 +901,6 @@ def test_roc_auc_score():
 @pytest.mark.parametrize("n_samples", [50, 500000])
 @pytest.mark.parametrize("dtype", [np.int32, np.int64, np.float32, np.float64])
 def test_roc_auc_score_random(n_samples, dtype):
-
     y_true, _, _, _ = generate_random_labels(
         lambda rng: rng.randint(0, 2, n_samples).astype(dtype)
     )
@@ -863,7 +930,7 @@ def test_roc_auc_score_at_limits():
     y_true = np.array([0.0, 0.5, 1.0], dtype=float)
     y_pred = np.array([0.0, 0.5, 1.0], dtype=float)
 
-    err_msg = "Continuous format of y_true  " "is not supported."
+    err_msg = "Continuous format of y_true  is not supported."
 
     with pytest.raises(ValueError, match=err_msg):
         roc_auc_score(y_true, y_pred)
@@ -893,9 +960,7 @@ def test_precision_recall_curve_at_limits():
     y_true = np.array([0.0, 0.0, 0.0], dtype=float)
     y_pred = np.array([0.0, 0.5, 1.0], dtype=float)
 
-    err_msg = (
-        "precision_recall_curve cannot be used when " "y_true is all zero."
-    )
+    err_msg = "precision_recall_curve cannot be used when y_true is all zero."
 
     with pytest.raises(ValueError, match=err_msg):
         precision_recall_curve(y_true, y_pred)
@@ -903,7 +968,7 @@ def test_precision_recall_curve_at_limits():
     y_true = np.array([0.0, 0.5, 1.0], dtype=float)
     y_pred = np.array([0.0, 0.5, 1.0], dtype=float)
 
-    err_msg = "Continuous format of y_true  " "is not supported."
+    err_msg = "Continuous format of y_true  is not supported."
 
     with pytest.raises(ValueError, match=err_msg):
         precision_recall_curve(y_true, y_pred)
@@ -916,7 +981,6 @@ def test_precision_recall_curve_at_limits():
 @pytest.mark.parametrize("n_samples", [50, 500000])
 @pytest.mark.parametrize("dtype", [np.int32, np.int64, np.float32, np.float64])
 def test_precision_recall_curve_random(n_samples, dtype):
-
     y_true, _, _, _ = generate_random_labels(
         lambda rng: rng.randint(0, 2, n_samples).astype(dtype)
     )
@@ -955,7 +1019,6 @@ def test_log_loss():
 @pytest.mark.parametrize("n_samples", [500, 500000])
 @pytest.mark.parametrize("dtype", [np.int32, np.int64, np.float32, np.float64])
 def test_log_loss_random(n_samples, dtype):
-
     y_true, _, _, _ = generate_random_labels(
         lambda rng: rng.randint(0, 10, n_samples).astype(dtype)
     )
@@ -976,7 +1039,7 @@ def test_log_loss_at_limits():
     y_true = np.array([0.0, 1.0, 2.0], dtype=float)
     y_pred = np.array([0.0, 0.5, 1.0], dtype=float)
 
-    err_msg = "The shape of y_pred doesn't " "match the number of classes"
+    err_msg = "The shape of y_pred doesn't match the number of classes"
 
     with pytest.raises(ValueError, match=err_msg):
         log_loss(y_true, y_pred)
@@ -1024,6 +1087,15 @@ def prep_dense_array(array, metric, col_major=0):
         return np.asfortranarray(array) if col_major else array
 
 
+@pytest.mark.filterwarnings(
+    "ignore:X was converted to boolean for metric russellrao:UserWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:Y was converted to boolean for metric russellrao:UserWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:Data was converted to boolean for metric russellrao:sklearn.exceptions.DataConversionWarning"
+)
 @pytest.mark.parametrize("metric", PAIRWISE_DISTANCE_METRICS.keys())
 @pytest.mark.parametrize(
     "matrix_size", [(5, 4), (1000, 3), (2, 10), (500, 400)]
@@ -1065,7 +1137,7 @@ def test_pairwise_distances(metric: str, matrix_size, is_col_major):
     cp.testing.assert_array_almost_equal(S, S2, decimal=compare_precision)
 
     # Change precision of one parameter
-    Y = np.asfarray(Y, dtype=np.float32)
+    Y = np.asarray(Y, dtype=np.float32)
     S = pairwise_distances(X, Y, metric=metric)
     S2 = ref_dense_pairwise_dist(X, Y, metric=metric)
     cp.testing.assert_array_almost_equal(S, S2, decimal=compare_precision)
@@ -1074,8 +1146,8 @@ def test_pairwise_distances(metric: str, matrix_size, is_col_major):
     compare_precision = 2
 
     # Change precision of both parameters to float
-    X = np.asfarray(X, dtype=np.float32)
-    Y = np.asfarray(Y, dtype=np.float32)
+    X = np.asarray(X, dtype=np.float32)
+    Y = np.asarray(Y, dtype=np.float32)
     S = pairwise_distances(X, Y, metric=metric)
     S2 = ref_dense_pairwise_dist(X, Y, metric=metric)
     cp.testing.assert_array_almost_equal(S, S2, decimal=compare_precision)
@@ -1096,6 +1168,15 @@ def test_pairwise_distances(metric: str, matrix_size, is_col_major):
         pairwise_distances(X, Y, metric=metric.capitalize())
 
 
+@pytest.mark.filterwarnings(
+    "ignore:X was converted to boolean for metric russellrao:UserWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:Y was converted to boolean for metric russellrao:UserWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:Data was converted to boolean for metric russellrao:sklearn.exceptions.DataConversionWarning"
+)
 @pytest.mark.parametrize("metric", PAIRWISE_DISTANCE_METRICS.keys())
 @pytest.mark.parametrize(
     "matrix_size",
@@ -1132,8 +1213,8 @@ def test_pairwise_distances_sklearn_comparison(metric: str, matrix_size):
     # For fp32, compare at 4 decimals, (3 places less than the ~7 max)
     compare_precision = 4
 
-    X = np.asfarray(X, dtype=np.float32)
-    Y = np.asfarray(Y, dtype=np.float32)
+    X = np.asarray(X, dtype=np.float32)
+    Y = np.asarray(Y, dtype=np.float32)
 
     # Compare to sklearn, fp32
     S = pairwise_distances(X, Y, metric=metric)
@@ -1143,6 +1224,15 @@ def test_pairwise_distances_sklearn_comparison(metric: str, matrix_size):
         cp.testing.assert_array_almost_equal(S, S2, decimal=compare_precision)
 
 
+@pytest.mark.filterwarnings(
+    "ignore:X was converted to boolean for metric russellrao:UserWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:Y was converted to boolean for metric russellrao:UserWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:Data was converted to boolean for metric russellrao:sklearn.exceptions.DataConversionWarning"
+)
 @pytest.mark.parametrize("metric", PAIRWISE_DISTANCE_METRICS.keys())
 def test_pairwise_distances_one_dimension_order(metric: str):
     # Test the pairwise_distance helper function for 1 dimensional cases which
@@ -1223,25 +1313,15 @@ def test_pairwise_distances_unsuppored_metrics(metric):
 
 
 def test_pairwise_distances_exceptions():
-
     rng = np.random.RandomState(4)
 
     X_int = rng.randint(10, size=(5, 4))
     X_double = rng.random_sample((5, 4))
-    X_float = np.asfarray(X_double, dtype=np.float32)
-    X_bool = rng.choice([True, False], size=(5, 4))
-
-    # Test int inputs (only float/double accepted at this time)
-    with pytest.raises(TypeError):
-        pairwise_distances(X_int, metric="euclidean")
+    X_float = np.asarray(X_double, dtype=np.float32)
 
     # Test second int inputs (should not have an exception with
     # convert_dtype=True)
     pairwise_distances(X_double, X_int, metric="euclidean")
-
-    # Test bool inputs (only float/double accepted at this time)
-    with pytest.raises(TypeError):
-        pairwise_distances(X_bool, metric="euclidean")
 
     # Test sending different types with convert_dtype=False
     with pytest.raises(TypeError):
@@ -1283,7 +1363,6 @@ def test_pairwise_distances_output_types(input_type, output_type, use_global):
 
     # Use the global manager object. Should do nothing unless use_global is set
     with cuml.using_output_type(output_type):
-
         # Compare to sklearn, fp64
         S = pairwise_distances(
             X, Y, metric="euclidean", output_type=output_type_param
@@ -1412,19 +1491,16 @@ def test_sparse_pairwise_distances_corner_cases(
 
 
 def test_sparse_pairwise_distances_exceptions():
-    if not has_scipy():
-        pytest.skip(
-            "Skipping sparse_pairwise_distances_exceptions "
-            "if Scipy is missing"
-        )
-    from scipy import sparse
-
     X_int = (
-        sparse.random(5, 4, dtype=np.float32, random_state=123, density=0.3)
+        scipy.sparse.random(
+            5, 4, dtype=np.float32, random_state=123, density=0.3
+        )
         * 10
     )
     X_int.dtype = cp.int32
-    X_bool = sparse.random(5, 4, dtype=bool, random_state=123, density=0.3)
+    X_bool = scipy.sparse.random(
+        5, 4, dtype=bool, random_state=123, density=0.3
+    )
     X_double = cupyx.scipy.sparse.random(
         5, 4, dtype=cp.float64, random_state=123, density=0.3
     )
@@ -1527,11 +1603,6 @@ def test_sparse_pairwise_distances_sklearn_comparison(
 @pytest.mark.parametrize("input_type", ["numpy", "cupy"])
 @pytest.mark.parametrize("output_type", ["cudf", "numpy", "cupy"])
 def test_sparse_pairwise_distances_output_types(input_type, output_type):
-    # Test larger sizes to sklearn
-    if not has_scipy():
-        pytest.skip("Skipping sparse_pairwise_distances if Scipy is missing")
-    import scipy
-
     if input_type == "cupy":
         X = cupyx.scipy.sparse.random(
             100, 100, dtype=cp.float64, random_state=123
@@ -1555,7 +1626,7 @@ def test_sparse_pairwise_distances_output_types(input_type, output_type):
 
 
 @pytest.mark.xfail(
-    reason="Temporarily disabling this test. " "See rapidsai/cuml#3569"
+    reason="Temporarily disabling this test. See rapidsai/cuml#3569"
 )
 @pytest.mark.parametrize(
     "nrows, ncols, n_info",
@@ -1621,11 +1692,6 @@ def test_hinge_loss(nrows, ncols, n_info, input_type, n_classes):
 @pytest.mark.parametrize("dtypeP", [cp.float32, cp.float64])
 @pytest.mark.parametrize("dtypeQ", [cp.float32, cp.float64])
 def test_kl_divergence(nfeatures, input_type, dtypeP, dtypeQ):
-    if not has_scipy():
-        pytest.skip("Skipping test_kl_divergence because Scipy is missing")
-
-    from scipy.stats import entropy as sp_entropy
-
     rng = np.random.RandomState(5)
 
     P = rng.random_sample((nfeatures))
@@ -1650,22 +1716,6 @@ def test_kl_divergence(nfeatures, input_type, dtypeP, dtypeQ):
         cu_res = cu_kl_divergence(P, Q, convert_dtype=False)
 
     cp.testing.assert_array_almost_equal(cu_res, sk_res)
-
-
-def test_mean_squared_error():
-    y1 = np.array([[1], [2], [3]])
-    y2 = y1.squeeze()
-
-    assert mean_squared_error(y1, y2) == 0
-    assert mean_squared_error(y2, y1) == 0
-
-
-def test_mean_squared_error_cudf_series():
-    a = cudf.Series([1.1, 2.2, 3.3, 4.4])
-    b = cudf.Series([0.1, 0.2, 0.3, 0.4])
-    err1 = mean_squared_error(a, b)
-    err2 = mean_squared_error(a.values, b.values)
-    assert err1 == err2
 
 
 @pytest.mark.parametrize("beta", [0.0, 0.5, 1.0, 2.0])

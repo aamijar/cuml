@@ -1,17 +1,6 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2025, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -40,6 +29,63 @@ namespace ML {
 namespace GLM {
 namespace opg {
 
+/**
+ * @brief Compute variance of the input matrix across all GPUs
+ *
+ * Variance operation is assumed to be performed on a given column.
+ *
+ * @tparam T the data type
+ * @param handle the internal cuml handle object
+ * @param X the input dense matrix
+ * @param n_samples number of rows of data across all GPUs
+ * @param mean_vector_all_samples the mean vector of rows of data across all GPUs
+ * @param var_vector the output variance vector
+ */
+template <typename T>
+void vars(const raft::handle_t& handle,
+          const SimpleDenseMat<T>& X,
+          size_t n_samples,
+          T* mean_vector_all_samples,
+          T* var_vector)
+{
+  const T* input_data = X.data;
+  int D               = X.n;
+  int num_rows        = X.m;
+  bool col_major      = (X.ord == COL_MAJOR);
+  auto stream         = handle.get_stream();
+  auto& comm          = handle.get_comms();
+
+  rmm::device_uvector<T> zero(D, handle.get_stream());
+  SimpleVec<T> zero_vec(zero.data(), D);
+  zero_vec.fill(0., stream);
+
+  // get sum of squares on every column
+  if (col_major) {
+    raft::stats::vars<false>(var_vector, input_data, zero.data(), D, num_rows, false, stream);
+  } else {
+    raft::stats::vars<true>(var_vector, input_data, zero.data(), D, num_rows, false, stream);
+  }
+  T weight = n_samples < 1 ? T(0) : T(1) * num_rows / T(n_samples - 1);
+  raft::linalg::multiplyScalar(var_vector, var_vector, weight, D, stream);
+  comm.allreduce(var_vector, var_vector, D, raft::comms::op_t::SUM, stream);
+  comm.sync_stream(stream);
+
+  // subtract mean
+  weight = n_samples <= 1 ? T(1) : T(n_samples) / T(n_samples - 1);
+  raft::linalg::binaryOp(
+    var_vector,
+    var_vector,
+    mean_vector_all_samples,
+    D,
+    [weight] __device__(const T v, const T m) {
+      T scaled_m = weight * m * m;
+      T diff     = v - scaled_m;
+      // avoid negative variance that is due to precision loss of floating point arithmetic
+      return diff >= 0. ? diff : v;
+    },
+    stream);
+}
+
 template <typename T>
 void mean_stddev(const raft::handle_t& handle,
                  const SimpleDenseMat<T>& X,
@@ -54,38 +100,26 @@ void mean_stddev(const raft::handle_t& handle,
   auto stream         = handle.get_stream();
   auto& comm          = handle.get_comms();
 
-  raft::stats::sum(mean_vector, input_data, D, num_rows, !col_major, stream);
+  if (col_major) {
+    raft::stats::sum<false>(mean_vector, input_data, D, num_rows, stream);
+  } else {
+    raft::stats::sum<true>(mean_vector, input_data, D, num_rows, stream);
+  }
   T weight = T(1) / T(n_samples);
   raft::linalg::multiplyScalar(mean_vector, mean_vector, weight, D, stream);
   comm.allreduce(mean_vector, mean_vector, D, raft::comms::op_t::SUM, stream);
   comm.sync_stream(stream);
 
-  raft::stats::vars(stddev_vector, input_data, mean_vector, D, num_rows, false, !col_major, stream);
-  weight = n_samples < 1 ? T(0) : T(1) * num_rows / T(n_samples - 1);
-  raft::linalg::multiplyScalar(stddev_vector, stddev_vector, weight, D, stream);
-  comm.allreduce(stddev_vector, stddev_vector, D, raft::comms::op_t::SUM, stream);
-  comm.sync_stream(stream);
-
-  // avoid negative variance that is due to precision loss of floating point arithmetic
-  weight         = n_samples < 1 ? T(0) : T(1) / T(n_samples - 1);
-  weight         = n_samples * weight;
-  auto no_neg_op = [weight] __device__(const T a, const T b) -> T {
-    if (a >= 0) return a;
-
-    return a + weight * b * b;
-  };
-
-  raft::linalg::binaryOp(stddev_vector, stddev_vector, mean_vector, D, no_neg_op, stream);
-
+  vars<T>(handle, X, n_samples, mean_vector, stddev_vector);
   raft::linalg::sqrt(stddev_vector, stddev_vector, D, handle.get_stream());
 }
 
-template <typename T>
-SimpleSparseMat<T> get_sub_mat(const raft::handle_t& handle,
-                               SimpleSparseMat<T> mat,
-                               int start,
-                               int end,
-                               rmm::device_uvector<int>& buff_row_ids)
+template <typename T, typename I = int>
+SimpleSparseMat<T, I> get_sub_mat(const raft::handle_t& handle,
+                                  SimpleSparseMat<T, I> mat,
+                                  int start,
+                                  int end,
+                                  rmm::device_uvector<I>& buff_row_ids)
 {
   end         = end <= mat.m ? end : mat.m;
   int n_rows  = end - start;
@@ -97,25 +131,25 @@ SimpleSparseMat<T> get_sub_mat(const raft::handle_t& handle,
                "the size of buff_row_ids should be at least end - start + 1");
   raft::copy(buff_row_ids.data(), mat.row_ids + start, n_rows + 1, stream);
 
-  int idx;
+  I idx;
   raft::copy(&idx, buff_row_ids.data(), 1, stream);
   raft::resource::sync_stream(handle);
 
-  auto subtract_op = [idx] __device__(const int a) { return a - idx; };
+  auto subtract_op = [idx] __device__(const I a) { return a - idx; };
   raft::linalg::unaryOp(buff_row_ids.data(), buff_row_ids.data(), n_rows + 1, subtract_op, stream);
 
-  int nnz;
+  I nnz;
   raft::copy(&nnz, buff_row_ids.data() + n_rows, 1, stream);
   raft::resource::sync_stream(handle);
 
-  SimpleSparseMat<T> res(
+  SimpleSparseMat<T, I> res(
     mat.values + idx, mat.cols + idx, buff_row_ids.data(), nnz, n_rows, n_cols);
   return res;
 }
 
-template <typename T>
+template <typename T, typename I = int>
 void mean(const raft::handle_t& handle,
-          const SimpleSparseMat<T>& X,
+          const SimpleSparseMat<T, I>& X,
           size_t n_samples,
           T* mean_vector)
 {
@@ -124,8 +158,18 @@ void mean(const raft::handle_t& handle,
   auto stream  = handle.get_stream();
   auto& comm   = handle.get_comms();
 
+  if (X.nnz == 0) {
+    SimpleVec<T> meanVec(mean_vector, D);
+    meanVec.fill(0., stream);
+
+    // call allreduces on zeroes to sync with other GPUs to avoid hanging
+    comm.allreduce(mean_vector, mean_vector, D, raft::comms::op_t::SUM, stream);
+    comm.sync_stream(stream);
+    return;
+  }
+
   int chunk_size = 500000;  // split matrix by rows for better numeric precision
-  rmm::device_uvector<int> buff_row_ids(chunk_size + 1, stream);
+  rmm::device_uvector<I> buff_row_ids(chunk_size + 1, stream);
 
   rmm::device_uvector<T> ones(chunk_size, stream);
   SimpleVec<T> ones_vec(ones.data(), chunk_size);
@@ -140,7 +184,7 @@ void mean(const raft::handle_t& handle,
 
   for (int i = 0; i < X.m; i += chunk_size) {
     // get X[i:i + chunk_size]
-    SimpleSparseMat<T> X_sub = get_sub_mat(handle, X, i, i + chunk_size, buff_row_ids);
+    SimpleSparseMat<T, I> X_sub = get_sub_mat(handle, X, i, i + chunk_size, buff_row_ids);
     SimpleDenseMat<T> ones_mat(ones.data(), 1, X_sub.m);
 
     X_sub.gemmb(handle, 1., ones_mat, false, false, 0., buff_D_mat, stream);
@@ -153,26 +197,34 @@ void mean(const raft::handle_t& handle,
   comm.sync_stream(stream);
 }
 
-template <typename T>
+template <typename T, typename I = int>
 void mean_stddev(const raft::handle_t& handle,
-                 const SimpleSparseMat<T>& X,
+                 const SimpleSparseMat<T, I>& X,
                  size_t n_samples,
                  T* mean_vector,
                  T* stddev_vector)
 {
   auto stream = handle.get_stream();
   int D       = X.n;
+
   mean(handle, X, n_samples, mean_vector);
 
   // calculate stdev.S
-  rmm::device_uvector<T> X_values_squared(X.nnz, stream);
-  raft::copy(X_values_squared.data(), X.values, X.nnz, stream);
-  auto square_op = [] __device__(const T a) { return a * a; };
-  raft::linalg::unaryOp(X_values_squared.data(), X_values_squared.data(), X.nnz, square_op, stream);
 
-  auto X_squared = SimpleSparseMat<T>(X_values_squared.data(), X.cols, X.row_ids, X.nnz, X.m, X.n);
+  if (X.nnz == 0) {
+    mean(handle, X, n_samples, stddev_vector);
+  } else {
+    rmm::device_uvector<T> X_values_squared(X.nnz, stream);
+    raft::copy(X_values_squared.data(), X.values, X.nnz, stream);
+    auto square_op = [] __device__(const T a) { return a * a; };
+    raft::linalg::unaryOp(
+      X_values_squared.data(), X_values_squared.data(), X.nnz, square_op, stream);
 
-  mean(handle, X_squared, n_samples, stddev_vector);
+    auto X_squared =
+      SimpleSparseMat<T, I>(X_values_squared.data(), X.cols, X.row_ids, X.nnz, X.m, X.n);
+
+    mean(handle, X_squared, n_samples, stddev_vector);
+  }
 
   T weight               = n_samples / T(n_samples - 1);
   auto submean_no_neg_op = [weight] __device__(const T a, const T b) -> T {
@@ -227,8 +279,9 @@ struct Standardizer {
     raft::linalg::binaryOp(scaled_mean.data, std_inv.data, mean.data, D, raft::mul_op(), stream);
   }
 
+  template <typename I = int>
   Standardizer(const raft::handle_t& handle,
-               const SimpleSparseMat<T>& X,
+               const SimpleSparseMat<T, I>& X,
                size_t n_samples,
                rmm::device_uvector<T>& mean_std_buff,
                size_t vec_size)
@@ -270,15 +323,13 @@ struct Standardizer {
     col_slice(W, Wweights, 0, D);
 
     auto mul_lambda = [] __device__(const T a, const T b) { return a * b; };
-    raft::linalg::matrixVectorOp(Wweights.data,
-                                 Wweights.data,
-                                 std_inv.data,
-                                 Wweights.n,
-                                 Wweights.m,
-                                 false,
-                                 true,
-                                 mul_lambda,
-                                 handle.get_stream());
+    raft::linalg::matrixVectorOp<false, true>(Wweights.data,
+                                              Wweights.data,
+                                              std_inv.data,
+                                              Wweights.n,
+                                              Wweights.m,
+                                              mul_lambda,
+                                              handle.get_stream());
 
     if (has_bias) {
       SimpleVec<T> Wbias;
@@ -303,8 +354,8 @@ struct Standardizer {
     SimpleDenseMat<T> Gweights;
     col_slice(G, Gweights, 0, D);
 
-    raft::matrix::matrixVectorBinaryMult(
-      Gweights.data, std_inv.data, Gweights.m, D, false, true, stream);
+    raft::matrix::matrixVectorBinaryMult<false, true>(
+      Gweights.data, std_inv.data, Gweights.m, D, stream);
 
     if (has_bias) {
       SimpleVec<T> Gbias;

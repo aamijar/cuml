@@ -1,27 +1,17 @@
-# Copyright (c) 2019-2023, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
+
+import cupy as cp
+import numpy as np
+import pytest
+import sklearn
+from packaging.version import Version
 
 from cuml.dask.common.dask_arr_utils import to_dask_cudf
-from cuml.internals.safe_imports import gpu_only_import
-from cuml.testing.utils import array_equal, unit_param, stress_param
-import pytest
+from cuml.testing.utils import array_equal, stress_param, unit_param
 
-from cuml.internals.safe_imports import cpu_only_import
-
-np = cpu_only_import("numpy")
-cp = gpu_only_import("cupy")
+SKLEARN_GE_1_5_0 = Version(sklearn.__version__) >= Version("1.5.0")
 
 
 @pytest.mark.mg
@@ -30,23 +20,25 @@ cp = gpu_only_import("cupy")
     [unit_param([1000, 20, 30]), stress_param([int(9e6), 5000, 30])],
 )
 @pytest.mark.parametrize("input_type", ["dataframe", "array"])
-def test_pca_fit(data_info, input_type, client):
+def test_tsvd_fit(data_info, input_type, client):
+    # Assume at least 4GB memory
+    max_gpu_memory = pytest.max_gpu_memory or 4
 
     nrows, ncols, n_parts = data_info
-    if nrows == int(9e6) and pytest.max_gpu_memory < 48:
+    if nrows == int(9e6) and max_gpu_memory < 48:
         if pytest.adapt_stress_test:
-            nrows = nrows * pytest.max_gpu_memory // 256
-            ncols = ncols * pytest.max_gpu_memory // 256
+            nrows = nrows * max_gpu_memory // 256
+            ncols = ncols * max_gpu_memory // 256
         else:
             pytest.skip(
                 "Insufficient GPU memory for this test."
                 "Re-run with 'CUML_ADAPT_STRESS_TESTS=True'"
             )
 
-    from cuml.dask.decomposition import TruncatedSVD as daskTPCA
     from sklearn.decomposition import TruncatedSVD
 
     from cuml.dask.datasets import make_blobs
+    from cuml.dask.decomposition import TruncatedSVD as daskTPCA
 
     X, _ = make_blobs(
         n_samples=nrows,
@@ -79,15 +71,18 @@ def test_pca_fit(data_info, input_type, client):
     ]
 
     for attr in all_attr:
-        with_sign = False if attr in ["components_"] else True
         cuml_res = getattr(cutsvd, attr)
-        if type(cuml_res) == np.ndarray:
+        if type(cuml_res) is np.ndarray:
             cuml_res = cuml_res.to_numpy()
         skl_res = getattr(sktsvd, attr)
         if attr == "singular_values_":
-            assert array_equal(cuml_res, skl_res, 1, with_sign=with_sign)
+            assert array_equal(cuml_res, skl_res, 1, with_sign=True)
+        elif attr == "components_":
+            assert array_equal(
+                cuml_res, skl_res, 1e-1, with_sign=SKLEARN_GE_1_5_0
+            )
         else:
-            assert array_equal(cuml_res, skl_res, 1e-1, with_sign=with_sign)
+            assert array_equal(cuml_res, skl_res, 1e-1, with_sign=True)
 
 
 @pytest.mark.mg
@@ -95,11 +90,10 @@ def test_pca_fit(data_info, input_type, client):
     "data_info",
     [unit_param([1000, 20, 46]), stress_param([int(9e6), 5000, 46])],
 )
-def test_pca_fit_transform_fp32(data_info, client):
-
+def test_tsvd_fit_transform_fp32(data_info, client):
     nrows, ncols, n_parts = data_info
-    from cuml.dask.decomposition import TruncatedSVD as daskTPCA
     from cuml.dask.datasets import make_blobs
+    from cuml.dask.decomposition import TruncatedSVD as daskTPCA
 
     X_cudf, _ = make_blobs(
         n_samples=nrows,
@@ -111,7 +105,7 @@ def test_pca_fit_transform_fp32(data_info, client):
         dtype=np.float32,
     )
 
-    cutsvd = daskTPCA(n_components=20)
+    cutsvd = daskTPCA(n_components=15)
     cutsvd.fit_transform(X_cudf)
 
 
@@ -120,12 +114,11 @@ def test_pca_fit_transform_fp32(data_info, client):
     "data_info",
     [unit_param([1000, 20, 33]), stress_param([int(9e6), 5000, 33])],
 )
-def test_pca_fit_transform_fp64(data_info, client):
-
+def test_tsvd_fit_transform_fp64(data_info, client):
     nrows, ncols, n_parts = data_info
 
-    from cuml.dask.decomposition import TruncatedSVD as daskTPCA
     from cuml.dask.datasets import make_blobs
+    from cuml.dask.decomposition import TruncatedSVD as daskTPCA
 
     X_cudf, _ = make_blobs(
         n_samples=nrows,
@@ -137,5 +130,30 @@ def test_pca_fit_transform_fp64(data_info, client):
         dtype=np.float64,
     )
 
-    cutsvd = daskTPCA(n_components=30)
+    cutsvd = daskTPCA(n_components=15)
     cutsvd.fit_transform(X_cudf)
+
+
+@pytest.mark.mg
+def test_tsvd_n_components_exceeds_features(client):
+    from cuml.dask.datasets import make_blobs
+    from cuml.dask.decomposition import TruncatedSVD as daskTPCA
+
+    # Create dataset with 20 features
+    X, _ = make_blobs(
+        n_samples=100,
+        n_features=20,
+        centers=1,
+        n_parts=2,
+        cluster_std=0.5,
+        random_state=10,
+        dtype=np.float32,
+    )
+
+    # Try to create TruncatedSVD with n_components > n_features (20)
+    cutsvd = daskTPCA(n_components=25)
+
+    with pytest.raises(
+        RuntimeError, match=r"`n_components` \(25\) must be <= than"
+    ):
+        cutsvd.fit(X)

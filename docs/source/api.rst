@@ -15,64 +15,9 @@ Module Configuration
 Output Data Type Configuration
 ------------------------------
 
- .. autofunction:: cuml.internals.memory_utils.set_global_output_type
- .. autofunction:: cuml.internals.memory_utils.using_output_type
+.. autofunction:: cuml.set_global_output_type
 
-.. _device-selection:
-
-CPU / GPU Device Selection (Experimental)
------------------------------------------
-cuML provides experimental support for running selected estimators and operators on either the GPU or CPU. This document covers the set of operators for which CPU/GPU device selection capabilities are supported as of the current nightly packages. If an operator isn't listed here, it can only be run on the GPU. Prior versions of cuML may have reduced support compared to the following table.
-
-.. list-table:: Operators Supporting CPU/GPU Device Selection and Execution
-   :header-rows: 1
-   :align: center
-   :widths: auto
-
-   * - Category
-     - Operator
-   * - Clustering
-     - HDBSCAN
-   * - Dimensionality Reduction and Manifold Learning
-     - PCA
-   * - Dimensionality Reduction and Manifold Learning
-     - TruncatedSVD
-   * - Dimensionality Reduction and Manifold Learning
-     - UMAP
-   * - Neighbors
-     - NearestNeighbors
-   * - Regression and Classification
-     - ElasticNet
-   * - Regression and Classification
-     - Lasso
-   * - Regression and Classification
-     - LinearRegression
-   * - Regression and Classification
-     - LogisticRegression
-   * - Regression and Classification
-     - Ridge
-
-If a CUDA-enabled GPU is available on the system, cuML will default to using it. Users can configure CPU or GPU execution for supported operators via context managers or global configuration. 
-
-.. code-block:: python
-
-   from cuml.linear_model import Lasso
-   from cuml.common.device_selection import using_device_type, set_global_device_type
-
-   with using_device_type("CPU"): # Alternatively, using_device_type("GPU")
-       model = Lasso()
-       model.fit(X_train, y_train)
-       predictions = model.predict(X_test)
-
-   # All operators supporting CPU execution will run on the CPU after this configuration
-   set_global_device_type("CPU")
-
-   model = Lasso()
-   model.fit(X_train, y_train)
-   predictions = model.predict(X_test)
-
-For more detailed examples, please see the `Execution Device Interoperability Notebook
-<execution_device_interoperability.ipynb>`_ in the User Guide.
+.. autofunction:: cuml.using_output_type
 
 .. _verbosity-levels:
 
@@ -91,25 +36,25 @@ they are:
      - cuml.common.logger value
      - Verbosity level
    * - 0
-     - cuml.common.logger.level_off
+     - cuml.common.logger.level_enum.off
      - Disables all log messages
    * - 1
-     - cuml.common.logger.level_critical
+     - cuml.common.logger.level_enum.critical
      - Enables only critical messages
    * - 2
-     - cuml.common.logger.level_error
+     - cuml.common.logger.level_enum.error
      - Enables all messages up to and including errors.
    * - 3
-     - cuml.common.logger.level_warn
+     - cuml.common.logger.level_enum.warn
      - Enables all messages up to and including warnings.
    * - 4 or False
-     - cuml.common.logger.level_info
+     - cuml.common.logger.level_enum.info
      - Enables all messages up to and including information messages.
    * - 5 or True
-     - cuml.common.logger.level_debug
+     - cuml.common.logger.level_enum.debug
      - Enables all messages up to and including debug messages.
    * - 6
-     - cuml.common.logger.level_trace
+     - cuml.common.logger.level_enum.trace
      - Enables all messages up to and including trace messages.
 
 
@@ -120,6 +65,9 @@ Model Selection and Data Splitting
 ----------------------------------
 
  .. autofunction:: cuml.model_selection.train_test_split
+
+ .. autoclass:: cuml.model_selection.KFold
+    :members:
 
 Feature and Label Encoding (Single-GPU)
 ---------------------------------------
@@ -246,8 +194,7 @@ Metrics (regression, classification, and distance)
   .. automodule:: cuml.metrics.regression
     :members:
 
-  .. automodule:: cuml.metrics.accuracy
-    :members:
+  .. autofunction:: cuml.metrics.accuracy_score
 
   .. autofunction:: cuml.metrics.confusion_matrix
 
@@ -353,9 +300,6 @@ Mini Batch SGD Regressor
 Multiclass Classification
 -------------------------
 
-.. autoclass:: cuml.multiclass.MulticlassClassifier
-    :members:
-
 .. autoclass:: cuml.multiclass.OneVsOneClassifier
     :members:
 
@@ -400,6 +344,7 @@ Forest Inferencing
 
 .. autoclass:: cuml.ForestInference
     :members:
+    :inherited-members:
 
 Coordinate Descent
 ------------------
@@ -418,6 +363,9 @@ Support Vector Machines
 
 .. autoclass:: cuml.svm.SVR
     :members:
+
+.. autoclass:: cuml.svm.SVC
+    :members: decision_function, fit, predict, predict_log_proba, predict_proba
 
 .. autoclass:: cuml.svm.LinearSVC
     :members:
@@ -479,6 +427,13 @@ HDBSCAN
 
 .. autofunction:: cuml.cluster.hdbscan.approximate_predict
 
+Spectral Clustering
+-------------------
+.. autoclass:: cuml.cluster.SpectralClustering
+    :members:
+
+.. autofunction:: cuml.cluster.spectral_clustering
+
 
 Dimensionality Reduction and Manifold Learning
 ==============================================
@@ -506,6 +461,13 @@ UMAP
 .. autoclass:: cuml.UMAP
     :members:
 
+.. autofunction:: cuml.manifold.umap.fuzzy_simplicial_set
+
+.. autofunction:: cuml.manifold.umap.simplicial_set_embedding
+
+.. autofunction:: cuml.manifold.umap.find_ab_params
+
+
 Random Projections
 ------------------
 
@@ -523,6 +485,14 @@ TSNE
 
 .. autoclass:: cuml.TSNE
     :members:
+
+Spectral Embedding
+------------------
+
+.. autoclass:: cuml.manifold.SpectralEmbedding
+    :members:
+
+.. autofunction:: cuml.manifold.spectral_embedding
 
 Neighbors
 ==========
@@ -682,6 +652,17 @@ Dask Base Classes and Mixins
 
 .. autoclass:: cuml.dask.common.base.DelayedInverseTransformMixin
    :members:
+
+cuml.accel
+==========
+
+.. autofunction:: cuml.accel.install
+
+.. autofunction:: cuml.accel.enabled
+
+.. autofunction:: cuml.accel.profile
+
+.. autofunction:: cuml.accel.is_proxy
 
 Experimental
 ============
